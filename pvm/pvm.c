@@ -23,6 +23,9 @@ int PWM_Init(PWM_State_s* state, char* code, int len){
 
 	state->PC = state->code_ptr;
 	state->SP = state->stack;
+	state->FP = state->stack;
+
+	return ERRORCODE_NO_ERROR;
 }
 
 int PWM_UsrSect(PWM_State_s* state, void* ptr, int size, int func){
@@ -255,6 +258,61 @@ int PWM_ExecTick(PWM_State_s* state){
 		else
 			status = ERRORCODE_EMPTY_STACK;
 		break;
+
+	case INSTR_ENTER:
+		/* Prologue: save the caller's frame pointer (as an index, not a raw pointer,
+		 * so it round-trips through a PWM_Word_t stack slot) and open a new frame here. */
+		status = _StackPush(state, (PWM_Word_t)(state->FP - state->stack));
+		if(status == ERRORCODE_NO_ERROR)
+			state->FP = state->SP;
+		break;
+
+	case INSTR_LEAVE:
+		/* Epilogue: drop this frame's locals and restore the caller's frame pointer,
+		 * leaving the return address CALL pushed back on top for RET. */
+		if(state->FP > state->stack && state->FP <= state->stack + PVM_CFG_STACK_SIZE){
+			PWM_Word_t savedFpIndex;
+
+			state->SP = state->FP;
+			status = _StackPop(state, &savedFpIndex);
+			if(status == ERRORCODE_NO_ERROR)
+				state->FP = state->stack + savedFpIndex;
+		}
+		else
+			status = ERRORCODE_BAD_DADR;
+		break;
+
+	case INSTR_LOADFP:
+	{
+		PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
+		PWM_Word_t* addr = state->FP + offset;
+
+		if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE){
+			status = _StackPush(state, *addr);
+			if(status == ERRORCODE_NO_ERROR) state->PC += 2;
+		}
+		else
+			status = ERRORCODE_BAD_DADR;
+	}
+		break;
+
+	case INSTR_STOREFP:
+	{
+		PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
+		PWM_Word_t* addr = state->FP + offset;
+
+		if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE){
+			PWM_Word_t data;
+			status = _StackPop(state, &data);
+			if(status == ERRORCODE_NO_ERROR){
+				*addr = data;
+				state->PC += 2;
+			}
+		}
+		else
+			status = ERRORCODE_BAD_DADR;
+	}
+		break;
 	case INSTR_CALL:
 		if(*(PWM_Word_t*)(state->PC + 1) < state->code_len){
 			_StackPush(state, (state->PC + 3) - state->code_ptr);
@@ -471,6 +529,41 @@ void PWM_PrintInstr(PWM_State_s* state){
 							*_StackIndexOfTop(state, 0),
 							(PWM_Word_t)~(*_StackIndexOfTop(state, 0)),
 							_StackItemsNum(state));
+			break;
+		case INSTR_ENTER:
+			printf(	"0x%X ENTER FP %i -> %i SP %i + 1\n", adr,
+							(int)(state->FP - state->stack),
+							(int)(state->SP - state->stack),
+							_StackItemsNum(state));
+			break;
+		case INSTR_LEAVE:
+			printf(	"0x%X LEAVE FP %i -> %i SP %i - 1\n", adr,
+							(int)(state->FP - state->stack),
+							(state->FP > state->stack) ? (int)*(state->FP - 1) : -1,
+							_StackItemsNum(state));
+			break;
+		case INSTR_LOADFP:
+		{
+			PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
+			PWM_Word_t* addr = state->FP + offset;
+
+			if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE)
+				printf(	"0x%X LOADFP %i -> %i SP %i + 1\n", adr, offset, *addr, _StackItemsNum(state));
+			else
+				printf(	"0x%X LOADFP %i -> BadAdr SP %i + 1\n", adr, offset, _StackItemsNum(state));
+		}
+			break;
+		case INSTR_STOREFP:
+		{
+			PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
+			PWM_Word_t* addr = state->FP + offset;
+
+			if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE)
+				printf(	"0x%X STOREFP %i -> %i SP %i - 1\n", adr, offset,
+								*_StackIndexOfTop(state, 0), _StackItemsNum(state));
+			else
+				printf(	"0x%X STOREFP %i -> BadAdr SP %i - 1\n", adr, offset, _StackItemsNum(state));
+		}
 			break;
 		case INSTR_CALL:
 			printf(	"0x%X CALL -> 0x%X SP %i + 1\n", adr,

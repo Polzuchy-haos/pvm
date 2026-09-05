@@ -1,22 +1,83 @@
+add_library(pvmopcodes STATIC
+	opcodes.cpp
+	opcodes.h
+)
+target_include_directories(pvmopcodes PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(pvmopcodes PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
+
+add_library(pvmdisasm_lib STATIC
+	disassembler.cpp
+	disassembler.h
+)
+target_link_libraries(pvmdisasm_lib PUBLIC pvmopcodes)
+target_include_directories(pvmdisasm_lib PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
+
 add_executable(pvmc
-	pvmc.c
-	assembler.c
+	pvmc.cpp
+	assembler.cpp
 	assembler.h
 )
-
+target_link_libraries(pvmc PRIVATE pvmopcodes)
 target_include_directories(pvmc PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
 
-# Assemble the example listing at build time so pvmsim has something to run out of the box.
-set(PVM_EXAMPLE_SRC ${CMAKE_SOURCE_DIR}/example/bytecode_listing.pvms)
-set(PVM_EXAMPLE_BYTECODE ${CMAKE_BINARY_DIR}/bytecode/bytecode_listing.bin)
-
-add_custom_command(
-	OUTPUT ${PVM_EXAMPLE_BYTECODE}
-	COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/bytecode
-	COMMAND $<TARGET_FILE:pvmc> ${PVM_EXAMPLE_SRC} -o ${PVM_EXAMPLE_BYTECODE}
-	DEPENDS pvmc ${PVM_EXAMPLE_SRC}
-	COMMENT "Assembling example/bytecode_listing.pvms"
+add_executable(pvmdisasm
+	pvmdisasm.cpp
 )
-add_custom_target(example_bytecode ALL DEPENDS ${PVM_EXAMPLE_BYTECODE})
+target_link_libraries(pvmdisasm PRIVATE pvmdisasm_lib)
+target_include_directories(pvmdisasm PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
 
-set(PVM_EXAMPLE_BYTECODE ${PVM_EXAMPLE_BYTECODE} PARENT_SCOPE)
+if(MINGW)
+	target_link_options(pvmc PRIVATE -static-libgcc -static-libstdc++)
+	target_link_options(pvmdisasm PRIVATE -static-libgcc -static-libstdc++)
+endif()
+
+# Run every example .pvms through the whole toolchain at build time, so there's
+# always a known-good set of outputs to look at (bin/hex/carray/listing/disasm)
+# and something for the CTest smoke tests (see top-level CMakeLists.txt) to run.
+set(PVM_BYTECODE_DIR ${CMAKE_BINARY_DIR}/bytecode)
+
+function(pvm_compile_example name src)
+	set(bin 		${PVM_BYTECODE_DIR}/${name}.bin)
+	set(lst 		${PVM_BYTECODE_DIR}/${name}.lst)
+	set(hexf 		${PVM_BYTECODE_DIR}/${name}.hex)
+	set(carray 	${PVM_BYTECODE_DIR}/${name}.c)
+	set(disasm 	${PVM_BYTECODE_DIR}/${name}.disasm.txt)
+
+	add_custom_command(
+		OUTPUT ${bin} ${lst}
+		COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_BYTECODE_DIR}
+		COMMAND $<TARGET_FILE:pvmc> ${src} -o ${bin} -f bin -l ${lst}
+		DEPENDS pvmc ${src}
+		COMMENT "Assembling ${name} (bin + listing)"
+	)
+	add_custom_command(
+		OUTPUT ${hexf}
+		COMMAND $<TARGET_FILE:pvmc> ${src} -o ${hexf} -f hex
+		DEPENDS pvmc ${src}
+		COMMENT "Assembling ${name} (Intel HEX)"
+	)
+	add_custom_command(
+		OUTPUT ${carray}
+		COMMAND $<TARGET_FILE:pvmc> ${src} -o ${carray} -f carray
+		DEPENDS pvmc ${src}
+		COMMENT "Assembling ${name} (C array)"
+	)
+	add_custom_command(
+		OUTPUT ${disasm}
+		COMMAND $<TARGET_FILE:pvmdisasm> ${bin} -o ${disasm}
+		DEPENDS pvmdisasm ${bin}
+		COMMENT "Disassembling ${name}.bin"
+	)
+
+	add_custom_target(${name}_bytecode ALL DEPENDS ${bin} ${lst} ${hexf} ${carray} ${disasm})
+
+	set(${name}_BYTECODE ${bin} PARENT_SCOPE)
+endfunction()
+
+pvm_compile_example(bytecode_listing 			${CMAKE_SOURCE_DIR}/example/bytecode_listing.pvms)
+pvm_compile_example(test_new_instructions 	${CMAKE_SOURCE_DIR}/example/test_new_instructions.pvms)
+pvm_compile_example(test_frame_pointer 		${CMAKE_SOURCE_DIR}/example/test_frame_pointer.pvms)
+
+set(PVM_EXAMPLE_BYTECODE 		${bytecode_listing_BYTECODE} 			PARENT_SCOPE)
+set(PVM_TESTINSTR_BYTECODE ${test_new_instructions_BYTECODE} 	PARENT_SCOPE)
+set(PVM_TESTFP_BYTECODE 		${test_frame_pointer_BYTECODE} 		PARENT_SCOPE)

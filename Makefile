@@ -1,6 +1,6 @@
 BUILD_DIR := build
 
-.PHONY: all build run clean
+.PHONY: all build run test clean
 
 all: build
 
@@ -10,6 +10,9 @@ build:
 
 run: build
 	$(BUILD_DIR)/simulator/pvmsim
+
+test: build
+	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 clean:
 	cmake -E rm -rf $(BUILD_DIR)

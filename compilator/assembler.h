@@ -1,17 +1,30 @@
 #ifndef PVMC_ASSEMBLER_H_
 #define PVMC_ASSEMBLER_H_
 
-#include <stdint.h>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+class AssemblerError : public std::runtime_error {
+public:
+	explicit AssemblerError(const std::string& message) : std::runtime_error(message) {}
+};
+
+struct AssembleResult {
+	std::vector<uint8_t> code;
+	/* Human-readable "address  hex bytes  MNEMONIC operand" listing, grouped by label,
+	 * using the *original* source operand text (symbol names, not resolved addresses). */
+	std::string 					listing;
+};
 
 /*
  * Assembles a .pvms source file (with recursive .import expansion,
  * .const substitution and .entry block reordering, see example/bytecode_listing.pvms)
  * into raw PVM bytecode.
  *
- * On success returns 0, *out_code is a malloc'd buffer (caller frees it) and
- * *out_len is its length in bytes.
- * On failure returns non-zero; a diagnostic has already been printed to stderr.
+ * Throws AssemblerError with a ready-to-print "file:line: error: ..." diagnostic on failure.
  */
-int PVMC_Assemble(const char* input_path, uint8_t** out_code, int* out_len);
+AssembleResult PVMC_Assemble(const std::string& input_path);
 
 #endif /* PVMC_ASSEMBLER_H_ */

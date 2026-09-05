@@ -10,8 +10,8 @@
 
 #include <stdint.h>
 
-#define PVM_CFG_STACK_SIZE			(8) //word
-#define PVM_CFG_RAM_SIZE				(4) //word
+#define PVM_CFG_STACK_SIZE			(32) //word
+#define PVM_CFG_RAM_SIZE				(32) //word
 #define PVM_CFG_USRSECT_BGN			(0x4000)
 
 typedef int16_t	PWM_Word_t;
@@ -22,6 +22,7 @@ typedef struct PWM_State_s {
 	uint16_t code_len;
 
 	PWM_Word_t* SP;
+	PWM_Word_t* FP;
 	uint8_t* 		PC;
 	void* usrsect_ptr;
 	PWM_Word_t usrsect_type;
@@ -58,6 +59,10 @@ enum PVM_Instruction_e{
 	INSTR_SHL 			=	0x17,
 	INSTR_SHR 			=	0x18,
 	INSTR_NOT 			=	0x19,
+	INSTR_ENTER 		=	0x1A,
+	INSTR_LEAVE 		=	0x1B,
+	INSTR_LOADFP 		=	0x1C,
+	INSTR_STOREFP 	=	0x1D,
 };
 
 enum PVM_ExecErrorCode{
