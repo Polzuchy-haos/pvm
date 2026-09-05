@@ -1,0 +1,13 @@
+// Аналог example/test_frame_pointer.pvms: функция с аргументом и возвратом
+// значения — раскладку кадра (ENTER/LEAVE/LOADFP/STOREFP) теперь считает
+// компилятор, а не программист вручную.
+
+int RESULT;
+
+int square(int x) {
+    return x * x;
+}
+
+void main() {
+    RESULT = square(7);
+}

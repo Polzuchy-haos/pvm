@@ -8,16 +8,17 @@
 #include <stdio.h>
 
 
-static int 					_StackItemsNum(PWM_State_s* state);
-static int					_StackPush(PWM_State_s* state, PWM_Word_t value);
-static int					_StackPop(PWM_State_s* state, PWM_Word_t* value);
-static PWM_Word_t* 	_StackIndexOfTop(PWM_State_s* state, int index);
-static int					_IsValidDataAddr(PWM_State_s* state, PWM_Word_t adr);
-static int					_DataRead(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t* data);
-static int					_DataWrite(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t data);
+static int 					_StackItemsNum(PVM_State_s* state);
+static int					_StackPush(PVM_State_s* state, PVM_Word_t value);
+static int					_StackPop(PVM_State_s* state, PVM_Word_t* value);
+static PVM_Word_t* 	_StackIndexOfTop(PVM_State_s* state, int index);
+static int					_IsValidDataAddr(PVM_State_s* state, PVM_Word_t adr);
+static int					_DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data);
+static int					_DataWrite(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t data);
+static PVM_Word_t		_FetchWord(const uint8_t* p);
 
 
-int PWM_Init(PWM_State_s* state, char* code, int len){
+int PVM_Init(PVM_State_s* state, char* code, int len){
 	state->code_ptr = (uint8_t*)code;
 	state->code_len = len;
 
@@ -28,7 +29,7 @@ int PWM_Init(PWM_State_s* state, char* code, int len){
 	return ERRORCODE_NO_ERROR;
 }
 
-int PWM_UsrSect(PWM_State_s* state, void* ptr, int size, int func){
+int PVM_UsrSect(PVM_State_s* state, void* ptr, int size, int func){
 	int status = ERRORCODE_NO_ERROR;
 
 	state->usrsect_ptr = ptr;
@@ -38,14 +39,14 @@ int PWM_UsrSect(PWM_State_s* state, void* ptr, int size, int func){
 	return status;
 }
 
-int PWM_ExecTick(PWM_State_s* state){
+int PVM_ExecTick(PVM_State_s* state){
 	int status = ERRORCODE_NO_ERROR;
 
 	uint8_t optcode = *state->PC;
 
 	switch(optcode){
 	case INSTR_PUSH:
-		status = _StackPush(state, *(PWM_Word_t*)(state->PC + 1));
+		status = _StackPush(state, _FetchWord(state->PC + 1));
 		if(status == ERRORCODE_NO_ERROR) state->PC += 2;
 		break;
 
@@ -55,9 +56,9 @@ int PWM_ExecTick(PWM_State_s* state){
 
 	case INSTR_SWAP:
 		if(_StackItemsNum(state) >= 2){
-			PWM_Word_t *a = _StackIndexOfTop(state, 1);
-			PWM_Word_t *b = _StackIndexOfTop(state, 0);
-			PWM_Word_t tmp = 	*a;
+			PVM_Word_t *a = _StackIndexOfTop(state, 1);
+			PVM_Word_t *b = _StackIndexOfTop(state, 0);
+			PVM_Word_t tmp = 	*a;
 
 			*a = *b;
 			*b = tmp;
@@ -108,7 +109,7 @@ int PWM_ExecTick(PWM_State_s* state){
 		break;
 	case INSTR_EQ:
 		if(_StackItemsNum(state) >= 2){
-			*_StackIndexOfTop(state, 1) = *_StackIndexOfTop(state, 0) == *_StackIndexOfTop(state, 1);
+			*_StackIndexOfTop(state, 1) = *_StackIndexOfTop(state, 1) == *_StackIndexOfTop(state, 0);
 			_StackPop(state, 0);
 		}
 		else
@@ -116,15 +117,15 @@ int PWM_ExecTick(PWM_State_s* state){
 		break;
 	case INSTR_LT:
 		if(_StackItemsNum(state) >= 2){
-			*_StackIndexOfTop(state, 1) = *_StackIndexOfTop(state, 0) < *_StackIndexOfTop(state, 1);
+			*_StackIndexOfTop(state, 1) = *_StackIndexOfTop(state, 1) < *_StackIndexOfTop(state, 0);
 			_StackPop(state, 0);
 		}
 		else
 			status = ERRORCODE_PAIR_STACK;
 		break;
 	case INSTR_JMP:
-		if(*(PWM_Word_t*)(state->PC + 1) < state->code_len)
-			state->PC = state->code_ptr + *(PWM_Word_t*)(state->PC + 1) - 1;
+		if(_FetchWord(state->PC + 1) < state->code_len)
+			state->PC = state->code_ptr + _FetchWord(state->PC + 1) - 1;
 		else
 			status = ERRORCODE_BAD_IADR;
 		break;
@@ -135,8 +136,8 @@ int PWM_ExecTick(PWM_State_s* state){
 									(!*_StackIndexOfTop(state, 0)) :
 									(*_StackIndexOfTop(state, 0));
 			if(flag){
-				if((*(PWM_Word_t*)(state->PC + 1) < state->code_len))
-					state->PC = state->code_ptr + *(PWM_Word_t*)(state->PC + 1) - 1;
+				if((_FetchWord(state->PC + 1) < state->code_len))
+					state->PC = state->code_ptr + _FetchWord(state->PC + 1) - 1;
 				else
 					status = ERRORCODE_BAD_IADR;
 			}
@@ -152,8 +153,8 @@ int PWM_ExecTick(PWM_State_s* state){
 
 	case INSTR_LOAD:
 	{
-		PWM_Word_t adr = *(PWM_Word_t*)(state->PC + 1);
-		PWM_Word_t data = 0;
+		PVM_Word_t adr = _FetchWord(state->PC + 1);
+		PVM_Word_t data = 0;
 
 		status = _DataRead(state, adr, &data);
 		if(status == ERRORCODE_NO_ERROR){
@@ -164,8 +165,8 @@ int PWM_ExecTick(PWM_State_s* state){
 		break;
 	case INSTR_STORE:
 	{
-		PWM_Word_t adr = *(PWM_Word_t*)(state->PC + 1);
-		PWM_Word_t data = 0;
+		PVM_Word_t adr = _FetchWord(state->PC + 1);
+		PVM_Word_t data = 0;
 
 		if(_IsValidDataAddr(state, adr)){
 			_StackPop(state, &data);
@@ -178,8 +179,8 @@ int PWM_ExecTick(PWM_State_s* state){
 		break;
 	case INSTR_LOADI:
 	{
-		PWM_Word_t adr = 0;
-		PWM_Word_t data = 0;
+		PVM_Word_t adr = 0;
+		PVM_Word_t data = 0;
 
 		if(_StackItemsNum(state) >= 1){
 			_StackPop(state, &adr);
@@ -193,8 +194,8 @@ int PWM_ExecTick(PWM_State_s* state){
 		break;
 	case INSTR_STOREI:
 	{
-		PWM_Word_t adr = 0;
-		PWM_Word_t data = 0;
+		PVM_Word_t adr = 0;
+		PVM_Word_t data = 0;
 
 		if(_StackItemsNum(state) >= 2){
 			_StackPop(state, &adr);
@@ -261,8 +262,8 @@ int PWM_ExecTick(PWM_State_s* state){
 
 	case INSTR_ENTER:
 		/* Prologue: save the caller's frame pointer (as an index, not a raw pointer,
-		 * so it round-trips through a PWM_Word_t stack slot) and open a new frame here. */
-		status = _StackPush(state, (PWM_Word_t)(state->FP - state->stack));
+		 * so it round-trips through a PVM_Word_t stack slot) and open a new frame here. */
+		status = _StackPush(state, (PVM_Word_t)(state->FP - state->stack));
 		if(status == ERRORCODE_NO_ERROR)
 			state->FP = state->SP;
 		break;
@@ -271,7 +272,7 @@ int PWM_ExecTick(PWM_State_s* state){
 		/* Epilogue: drop this frame's locals and restore the caller's frame pointer,
 		 * leaving the return address CALL pushed back on top for RET. */
 		if(state->FP > state->stack && state->FP <= state->stack + PVM_CFG_STACK_SIZE){
-			PWM_Word_t savedFpIndex;
+			PVM_Word_t savedFpIndex;
 
 			state->SP = state->FP;
 			status = _StackPop(state, &savedFpIndex);
@@ -284,8 +285,8 @@ int PWM_ExecTick(PWM_State_s* state){
 
 	case INSTR_LOADFP:
 	{
-		PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
-		PWM_Word_t* addr = state->FP + offset;
+		PVM_Word_t offset = _FetchWord(state->PC + 1);
+		PVM_Word_t* addr = state->FP + offset;
 
 		if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE){
 			status = _StackPush(state, *addr);
@@ -298,11 +299,11 @@ int PWM_ExecTick(PWM_State_s* state){
 
 	case INSTR_STOREFP:
 	{
-		PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
-		PWM_Word_t* addr = state->FP + offset;
+		PVM_Word_t offset = _FetchWord(state->PC + 1);
+		PVM_Word_t* addr = state->FP + offset;
 
 		if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE){
-			PWM_Word_t data;
+			PVM_Word_t data;
 			status = _StackPop(state, &data);
 			if(status == ERRORCODE_NO_ERROR){
 				*addr = data;
@@ -314,15 +315,15 @@ int PWM_ExecTick(PWM_State_s* state){
 	}
 		break;
 	case INSTR_CALL:
-		if(*(PWM_Word_t*)(state->PC + 1) < state->code_len){
+		if(_FetchWord(state->PC + 1) < state->code_len){
 			_StackPush(state, (state->PC + 3) - state->code_ptr);
-			state->PC = state->code_ptr + *(PWM_Word_t*)(state->PC + 1) - 1;
+			state->PC = state->code_ptr + _FetchWord(state->PC + 1) - 1;
 		}
 		else
 			status = ERRORCODE_BAD_IADR;
 		break;
 	case INSTR_RET:
-		PWM_Word_t data = *_StackIndexOfTop(state, 0);
+		PVM_Word_t data = *_StackIndexOfTop(state, 0);
 		if(data < state->code_len){
 			state->PC = state->code_ptr + data - 1;
 			_StackPop(state, 0);
@@ -340,14 +341,14 @@ int PWM_ExecTick(PWM_State_s* state){
 	return status;
 }
 
-void PWM_PrintInstr(PWM_State_s* state){
+void PVM_PrintInstr(PVM_State_s* state){
 	uint8_t optcode = *state->PC;
 	int adr = state->PC - state->code_ptr;
 
 	switch(optcode){
 		case INSTR_PUSH:
 			printf(	"0x%X PUSH -> %i SP %i + 1\n", adr,
-							*(PWM_Word_t*)(state->PC + 1),
+							_FetchWord(state->PC + 1),
 							_StackItemsNum(state));
 			break;
 		case INSTR_POP:
@@ -408,7 +409,7 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_JMP:
 			printf(	"0x%X JMP -> 0x%X SP %i\n", adr,
-							*(PWM_Word_t*)(state->PC + 1),
+							_FetchWord(state->PC + 1),
 							_StackItemsNum(state));
 			break;
 		case INSTR_JZ:
@@ -428,7 +429,7 @@ void PWM_PrintInstr(PWM_State_s* state){
 
 			if(flag)
 				printf("0x%X %s -> 0x%X SP %i - 1\n", adr,
-								func, *(PWM_Word_t*)(state->PC + 1), _StackItemsNum(state));
+								func, _FetchWord(state->PC + 1), _StackItemsNum(state));
 			else
 				printf("0x%X %s -> nope SP %i - 1\n", adr, func, _StackItemsNum(state));
 
@@ -436,8 +437,8 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_LOAD:
 		{
-			PWM_Word_t adr_data = *(PWM_Word_t*)(state->PC + 1);
-			PWM_Word_t data = 0;
+			PVM_Word_t adr_data = _FetchWord(state->PC + 1);
+			PVM_Word_t data = 0;
 
 			if(_DataRead(state, adr_data, &data) == ERRORCODE_NO_ERROR)
 				printf(	"0x%X LOAD 0x%X -> %i SP %i + 1\n", adr, adr_data,
@@ -450,8 +451,8 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_STORE:
 		{
-			PWM_Word_t adr_data = *(PWM_Word_t*)(state->PC + 1);
-			PWM_Word_t data = *_StackIndexOfTop(state, 0);
+			PVM_Word_t adr_data = _FetchWord(state->PC + 1);
+			PVM_Word_t data = *_StackIndexOfTop(state, 0);
 
 			if(	(adr_data < PVM_CFG_RAM_SIZE) ||
 					(state->usrsect_ptr != 0 &&
@@ -469,8 +470,8 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_LOADI:
 		{
-			PWM_Word_t adr_data = *_StackIndexOfTop(state, 0);
-			PWM_Word_t data = 0;
+			PVM_Word_t adr_data = *_StackIndexOfTop(state, 0);
+			PVM_Word_t data = 0;
 
 			if(_DataRead(state, adr_data, &data) == ERRORCODE_NO_ERROR)
 				printf(	"0x%X LOADI 0x%X -> %i SP %i\n", adr, adr_data,
@@ -527,7 +528,7 @@ void PWM_PrintInstr(PWM_State_s* state){
 		case INSTR_NOT:
 			printf(	"0x%X NOT %i -> %i SP %i\n", adr,
 							*_StackIndexOfTop(state, 0),
-							(PWM_Word_t)~(*_StackIndexOfTop(state, 0)),
+							(PVM_Word_t)~(*_StackIndexOfTop(state, 0)),
 							_StackItemsNum(state));
 			break;
 		case INSTR_ENTER:
@@ -544,8 +545,8 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_LOADFP:
 		{
-			PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
-			PWM_Word_t* addr = state->FP + offset;
+			PVM_Word_t offset = _FetchWord(state->PC + 1);
+			PVM_Word_t* addr = state->FP + offset;
 
 			if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE)
 				printf(	"0x%X LOADFP %i -> %i SP %i + 1\n", adr, offset, *addr, _StackItemsNum(state));
@@ -555,8 +556,8 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_STOREFP:
 		{
-			PWM_Word_t offset = *(PWM_Word_t*)(state->PC + 1);
-			PWM_Word_t* addr = state->FP + offset;
+			PVM_Word_t offset = _FetchWord(state->PC + 1);
+			PVM_Word_t* addr = state->FP + offset;
 
 			if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE)
 				printf(	"0x%X STOREFP %i -> %i SP %i - 1\n", adr, offset,
@@ -567,7 +568,7 @@ void PWM_PrintInstr(PWM_State_s* state){
 			break;
 		case INSTR_CALL:
 			printf(	"0x%X CALL -> 0x%X SP %i + 1\n", adr,
-							*(PWM_Word_t*)(state->PC + 1),
+							_FetchWord(state->PC + 1),
 							_StackItemsNum(state));
 			break;
 		case INSTR_RET:
@@ -581,11 +582,23 @@ void PWM_PrintInstr(PWM_State_s* state){
 }
 
 
-static int _StackItemsNum(PWM_State_s* state){
+/*
+ * Reads a little-endian 16-bit operand byte-by-byte rather than casting to a
+ * PVM_Word_t* and dereferencing: bytecode is a packed byte stream, so an
+ * operand can land on an odd address, and a typed pointer cast there is
+ * undefined behavior. x86 tolerates the resulting unaligned load silently;
+ * many ARM Cortex-M cores (M0/M0+ always, M3/M4/M7 when UNALIGN_TRP is set)
+ * raise a HardFault on it instead. Single-byte reads never have this problem.
+ */
+static PVM_Word_t _FetchWord(const uint8_t* p){
+	return (PVM_Word_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static int _StackItemsNum(PVM_State_s* state){
 	return (int)(state->SP - state->stack);
 }
 
-static int	_StackPush(PWM_State_s* state, PWM_Word_t value){
+static int	_StackPush(PVM_State_s* state, PVM_Word_t value){
 	int status = ERRORCODE_NO_ERROR;
 
 	if(_StackItemsNum(state) < PVM_CFG_STACK_SIZE){
@@ -598,7 +611,7 @@ static int	_StackPush(PWM_State_s* state, PWM_Word_t value){
 	return status;
 }
 
-static int _StackPop(PWM_State_s* state, PWM_Word_t* value){
+static int _StackPop(PVM_State_s* state, PVM_Word_t* value){
 	int status = ERRORCODE_NO_ERROR;
 
 	if(_StackItemsNum(state) > 0){
@@ -613,18 +626,18 @@ static int _StackPop(PWM_State_s* state, PWM_Word_t* value){
 	return status;
 }
 
-static PWM_Word_t* _StackIndexOfTop(PWM_State_s* state, int index){
+static PVM_Word_t* _StackIndexOfTop(PVM_State_s* state, int index){
 	return state->SP - index - 1;
 }
 
-static int _IsValidDataAddr(PWM_State_s* state, PWM_Word_t adr){
+static int _IsValidDataAddr(PVM_State_s* state, PVM_Word_t adr){
 	return 	(adr < PVM_CFG_RAM_SIZE) ||
 					(state->usrsect_ptr != 0 &&
 					 adr >= PVM_CFG_USRSECT_BGN &&
 					 adr < PVM_CFG_USRSECT_BGN + state->usrsect_len);
 }
 
-static int _DataRead(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t* data){
+static int _DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data){
 	int status = ERRORCODE_NO_ERROR;
 
 	if(adr < PVM_CFG_RAM_SIZE)
@@ -636,9 +649,9 @@ static int _DataRead(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t* data){
 		adr -= PVM_CFG_USRSECT_BGN;
 
 		if(state->usrsect_type)
-			status = ((PWM_FuncSection)(state->usrsect_ptr))(adr, data, 0);
+			status = ((PVM_FuncSection)(state->usrsect_ptr))(adr, data, 0);
 		else
-			*data = ((PWM_Word_t*)state->usrsect_ptr)[adr];
+			*data = ((PVM_Word_t*)state->usrsect_ptr)[adr];
 	}
 	else
 		status = ERRORCODE_BAD_DADR;
@@ -646,7 +659,7 @@ static int _DataRead(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t* data){
 	return status;
 }
 
-static int _DataWrite(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t data){
+static int _DataWrite(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t data){
 	int status = ERRORCODE_NO_ERROR;
 
 	if(adr < PVM_CFG_RAM_SIZE)
@@ -658,9 +671,9 @@ static int _DataWrite(PWM_State_s* state, PWM_Word_t adr, PWM_Word_t data){
 		adr -= PVM_CFG_USRSECT_BGN;
 
 		if(state->usrsect_type)
-			status = ((PWM_FuncSection)(state->usrsect_ptr))(adr, &data, 1);
+			status = ((PVM_FuncSection)(state->usrsect_ptr))(adr, &data, 1);
 		else
-			((PWM_Word_t*)state->usrsect_ptr)[adr] = data;
+			((PVM_Word_t*)state->usrsect_ptr)[adr] = data;
 	}
 	else
 		status = ERRORCODE_BAD_DADR;

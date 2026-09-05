@@ -14,23 +14,23 @@
 #define PVM_CFG_RAM_SIZE				(32) //word
 #define PVM_CFG_USRSECT_BGN			(0x4000)
 
-typedef int16_t	PWM_Word_t;
-typedef int (*PWM_FuncSection)(int adr, PWM_Word_t* data, int rw);
+typedef int16_t	PVM_Word_t;
+typedef int (*PVM_FuncSection)(int adr, PVM_Word_t* data, int rw);
 
-typedef struct PWM_State_s {
+typedef struct PVM_State_s {
 	uint8_t* code_ptr;
 	uint16_t code_len;
 
-	PWM_Word_t* SP;
-	PWM_Word_t* FP;
+	PVM_Word_t* SP;
+	PVM_Word_t* FP;
 	uint8_t* 		PC;
 	void* usrsect_ptr;
-	PWM_Word_t usrsect_type;
-	PWM_Word_t usrsect_len;
+	PVM_Word_t usrsect_type;
+	PVM_Word_t usrsect_len;
 
-	PWM_Word_t stack[PVM_CFG_STACK_SIZE];
-	PWM_Word_t ram[PVM_CFG_RAM_SIZE];
-}PWM_State_s;
+	PVM_Word_t stack[PVM_CFG_STACK_SIZE];
+	PVM_Word_t ram[PVM_CFG_RAM_SIZE];
+}PVM_State_s;
 
 enum PVM_Instruction_e{
 	INSTR_PUSH 			=	0x00,
@@ -78,10 +78,10 @@ enum PVM_ExecStatusCode{
 	PVM_STATUS_HALTED					=	 1,
 };
 
-int PWM_Init(PWM_State_s* state, char* code, int len);
-int PWM_UsrSect(PWM_State_s* state, void* ptr, int size, int func);
-int PWM_ExecTick(PWM_State_s* state);
+int PVM_Init(PVM_State_s* state, char* code, int len);
+int PVM_UsrSect(PVM_State_s* state, void* ptr, int size, int func);
+int PVM_ExecTick(PVM_State_s* state);
 
-void PWM_PrintInstr(PWM_State_s* state);
+void PVM_PrintInstr(PVM_State_s* state);
 
 #endif /* PVM_H_ */

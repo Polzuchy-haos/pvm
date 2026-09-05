@@ -1,0 +1,51 @@
+// Проверка глобальных массивов, "for", коротко замыкающих "&&"/"||"
+// и всех операторов сравнения (== != < > <= >=).
+
+int arr[5];
+int SUM;
+int FLAGS;
+
+void fill() {
+    int i;
+    for (i = 0; i < 5; i = i + 1) {
+        arr[i] = i * 2;
+    }
+}
+
+int total() {
+    int i;
+    int sum;
+    sum = 0;
+    for (i = 0; i < 5; i = i + 1) {
+        sum = sum + arr[i];
+    }
+    return sum;
+}
+
+void main() {
+    int a;
+    int b;
+    int flags;
+
+    fill();
+    SUM = total();          // 0+2+4+6+8 = 20
+
+    a = 3;
+    b = 7;
+    flags = 0;
+
+    if (a < b && b > a) {
+        flags = flags + 1;  // истина -> flags = 1
+    }
+    if (a <= 3 && b >= 7) {
+        flags = flags + 2;  // истина -> flags = 3
+    }
+    if (a == 3 || b == 100) {
+        flags = flags + 4;  // истина по короткому замыканию -> flags = 7
+    }
+    if (a != b) {
+        flags = flags + 8;  // истина -> flags = 15
+    }
+
+    FLAGS = flags;
+}

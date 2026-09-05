@@ -1,0 +1,132 @@
+#ifndef HLC_AST_H_
+#define HLC_AST_H_
+
+#include <memory>
+#include <string>
+#include <vector>
+
+/*
+ * v1 simplification, deliberate (see hlc/codegen.cpp for why): local variable
+ * declarations are only allowed at the very start of a function body, before
+ * any other statement (C89-style) -- every declared local must run exactly
+ * once, unconditionally, or its compile-time FP offset stops matching what is
+ * actually on the stack at runtime. The parser enforces this, not the AST.
+ */
+
+struct Expr {
+	int line = 0;
+	virtual ~Expr() = default;
+};
+using ExprPtr = std::unique_ptr<Expr>;
+
+struct IntLiteralExpr : Expr {
+	int value = 0;
+};
+
+struct VarRefExpr : Expr {
+	std::string name;
+};
+
+struct ArrayIndexExpr : Expr {
+	std::string name;
+	ExprPtr 		index;
+};
+
+struct UnaryExpr : Expr {
+	std::string op; /* "-", "!", "~" */
+	ExprPtr 		operand;
+};
+
+struct BinaryExpr : Expr {
+	std::string op; /* + - * / & | ^ << >> == != < > <= >= && || */
+	ExprPtr 		lhs, rhs;
+};
+
+struct AssignExpr : Expr {
+	std::string name;
+	ExprPtr 		value;
+};
+
+struct ArrayAssignExpr : Expr {
+	std::string name;
+	ExprPtr 		index;
+	ExprPtr 		value;
+};
+
+struct CallExpr : Expr {
+	std::string 				name;
+	std::vector<ExprPtr> args;
+};
+
+struct Stmt {
+	int line = 0;
+	virtual ~Stmt() = default;
+};
+using StmtPtr = std::unique_ptr<Stmt>;
+
+struct BlockStmt : Stmt {
+	std::vector<StmtPtr> stmts;
+};
+
+struct IfStmt : Stmt {
+	ExprPtr cond;
+	StmtPtr thenStmt;
+	StmtPtr elseStmt; /* may be null */
+};
+
+struct WhileStmt : Stmt {
+	ExprPtr cond;
+	StmtPtr body;
+};
+
+struct ForStmt : Stmt {
+	StmtPtr init; /* simple statement (assignment/call), may be null */
+	ExprPtr cond; /* may be null */
+	StmtPtr step; /* simple statement, may be null */
+	StmtPtr body;
+};
+
+struct ReturnStmt : Stmt {
+	ExprPtr value; /* may be null (void return) */
+};
+
+struct HaltStmt : Stmt {};
+
+struct ExprStmt : Stmt {
+	ExprPtr expr;
+};
+
+struct VarDeclStmt : Stmt {
+	std::string name;
+	ExprPtr 		init; /* may be null */
+};
+
+struct Param {
+	std::string name;
+};
+
+struct FuncDecl {
+	bool 									isVoid = false;
+	std::string 					name;
+	std::vector<Param> 		params;
+	std::unique_ptr<BlockStmt> body;
+	int 									line = 0;
+};
+
+struct GlobalVarDecl {
+	std::string name;
+	bool 				isVolatile 	= false;
+	bool 				hasAddress 	= false;
+	int 				address 		= 0;
+	bool 				isArray 		= false;
+	int 				arraySize 	= 0;
+	ExprPtr 		init; /* may be null; must fold to a constant (see codegen) */
+	int 				line 				= 0;
+};
+
+struct Program {
+	std::vector<GlobalVarDecl> globals;
+	std::vector<FuncDecl> 		 funcs;
+};
+
+#endif /* HLC_AST_H_ */

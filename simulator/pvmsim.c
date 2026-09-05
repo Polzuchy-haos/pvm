@@ -2,7 +2,7 @@
  ============================================================================
  Name        : pvmsim.c
  Description : Runs a compiled PVM bytecode file to completion (HALT/error),
-               tracing every instruction via PWM_PrintInstr.
+               tracing every instruction via PVM_PrintInstr.
  ============================================================================
  */
 
@@ -17,8 +17,8 @@
 
 #define MAX_STEPS (100000)
 
-PWM_State_s state;
-PWM_Word_t  periph[8] = {0};
+PVM_State_s state;
+PVM_Word_t  periph[8] = {0};
 
 static char* LoadFile(const char* path, int* out_len){
 	FILE* f = fopen(path, "rb");
@@ -51,16 +51,16 @@ int main(int argc, char** argv){
 	if(!code)
 		return EXIT_FAILURE;
 
-	PWM_Init(&state, code, len);
-	PWM_UsrSect(&state, &periph, sizeof(periph) / sizeof(PWM_Word_t), 0);
+	PVM_Init(&state, code, len);
+	PVM_UsrSect(&state, &periph, sizeof(periph) / sizeof(PVM_Word_t), 0);
 
 	for(step = 0; step < MAX_STEPS; step++){
 		int status;
 
-		PWM_PrintInstr(&state);
+		PVM_PrintInstr(&state);
 		fflush(stdout);
 
-		status = PWM_ExecTick(&state);
+		status = PVM_ExecTick(&state);
 		if(status == PVM_STATUS_HALTED){
 			printf("pvmsim: halted\n");
 			break;

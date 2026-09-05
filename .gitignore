@@ -4,3 +4,7 @@ build/
 *.exe
 *.bin
 .claude/
+
+# Release/ is a deliberately checked-in copy of the built CLI tools (see Release/README.md).
+!Release/
+!Release/*.exe

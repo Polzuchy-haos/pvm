@@ -74,10 +74,35 @@ function(pvm_compile_example name src)
 	set(${name}_BYTECODE ${bin} PARENT_SCOPE)
 endfunction()
 
+# Same as above, but for a .hlc (high-level language) source: compile it down to
+# .pvms via pvmcc first, then reuse pvm_compile_example unchanged for the rest.
+function(pvm_compile_hlc_example name hlc_src)
+	set(generated_pvms ${PVM_BYTECODE_DIR}/${name}.pvms)
+
+	add_custom_command(
+		OUTPUT ${generated_pvms}
+		COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_BYTECODE_DIR}
+		COMMAND $<TARGET_FILE:pvmcc> ${hlc_src} -o ${generated_pvms}
+		DEPENDS pvmcc ${hlc_src}
+		COMMENT "Compiling ${name} (hlc -> pvms)"
+	)
+
+	pvm_compile_example(${name} ${generated_pvms})
+	set(${name}_BYTECODE ${${name}_BYTECODE} PARENT_SCOPE)
+endfunction()
+
 pvm_compile_example(bytecode_listing 			${CMAKE_SOURCE_DIR}/example/bytecode_listing.pvms)
 pvm_compile_example(test_new_instructions 	${CMAKE_SOURCE_DIR}/example/test_new_instructions.pvms)
 pvm_compile_example(test_frame_pointer 		${CMAKE_SOURCE_DIR}/example/test_frame_pointer.pvms)
 
+pvm_compile_hlc_example(square 						${CMAKE_SOURCE_DIR}/example/square.hlc)
+pvm_compile_hlc_example(counter 						${CMAKE_SOURCE_DIR}/example/counter.hlc)
+pvm_compile_hlc_example(arrays_and_logic 	${CMAKE_SOURCE_DIR}/example/arrays_and_logic.hlc)
+pvm_compile_hlc_example(blink 							${CMAKE_SOURCE_DIR}/example/blink.hlc)
+
 set(PVM_EXAMPLE_BYTECODE 		${bytecode_listing_BYTECODE} 			PARENT_SCOPE)
 set(PVM_TESTINSTR_BYTECODE ${test_new_instructions_BYTECODE} 	PARENT_SCOPE)
 set(PVM_TESTFP_BYTECODE 		${test_frame_pointer_BYTECODE} 		PARENT_SCOPE)
+set(PVM_HLC_SQUARE_BYTECODE 			${square_BYTECODE} 						PARENT_SCOPE)
+set(PVM_HLC_COUNTER_BYTECODE 			${counter_BYTECODE} 					PARENT_SCOPE)
+set(PVM_HLC_ARRLOGIC_BYTECODE 		${arrays_and_logic_BYTECODE} 	PARENT_SCOPE)
