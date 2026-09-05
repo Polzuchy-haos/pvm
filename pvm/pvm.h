@@ -10,27 +10,36 @@
 
 #include <stdint.h>
 
-#define PVM_CFG_STACK_SIZE			(32) //word
-#define PVM_CFG_RAM_SIZE				(32) //word
+#define PVM_CFG_STACK_SIZE			(128) //word
+#define PVM_CFG_RAM_SIZE				(64) //word
 #define PVM_CFG_USRSECT_BGN			(0x4000)
 
 typedef int16_t	PVM_Word_t;
-typedef int (*PVM_FuncSection)(int adr, PVM_Word_t* data, int rw);
 
-typedef struct PVM_State_s {
+/* Forward-declared so a callback can take a pointer to the (still incomplete) state. */
+typedef struct PVM_State_s PVM_State_s;
+
+/* An SVC handler: reads its own arguments and pushes its own return value via
+ * PVM_Pop/PVM_Push, exactly like any other caller of the VM stack. */
+typedef int (*PVM_SvcFunc)(PVM_State_s* state);
+
+struct PVM_State_s {
 	uint8_t* code_ptr;
 	uint16_t code_len;
 
 	PVM_Word_t* SP;
 	PVM_Word_t* FP;
 	uint8_t* 		PC;
-	void* usrsect_ptr;
-	PVM_Word_t usrsect_type;
-	PVM_Word_t usrsect_len;
+
+	PVM_Word_t* usrsect_ptr; /* plain memory-mapped section, e.g. peripheral registers */
+	PVM_Word_t 	usrsect_len;
+
+	const PVM_SvcFunc* svc_table;
+	PVM_Word_t 				 svc_count;
 
 	PVM_Word_t stack[PVM_CFG_STACK_SIZE];
 	PVM_Word_t ram[PVM_CFG_RAM_SIZE];
-}PVM_State_s;
+};
 
 enum PVM_Instruction_e{
 	INSTR_PUSH 			=	0x00,
@@ -63,6 +72,7 @@ enum PVM_Instruction_e{
 	INSTR_LEAVE 		=	0x1B,
 	INSTR_LOADFP 		=	0x1C,
 	INSTR_STOREFP 	=	0x1D,
+	INSTR_SVC 			=	0x1E,
 };
 
 enum PVM_ExecErrorCode{
@@ -72,6 +82,7 @@ enum PVM_ExecErrorCode{
 	ERRORCODE_PAIR_STACK				=	-3,
 	ERRORCODE_BAD_IADR					=	-4,
 	ERRORCODE_BAD_DADR					=	-5,
+	ERRORCODE_BAD_SVC					=	-6,
 };
 
 enum PVM_ExecStatusCode{
@@ -79,8 +90,13 @@ enum PVM_ExecStatusCode{
 };
 
 int PVM_Init(PVM_State_s* state, char* code, int len);
-int PVM_UsrSect(PVM_State_s* state, void* ptr, int size, int func);
+int PVM_UsrSect(PVM_State_s* state, PVM_Word_t* ptr, int size);
+int PVM_RegisterSvc(PVM_State_s* state, const PVM_SvcFunc* table, int count);
 int PVM_ExecTick(PVM_State_s* state);
+
+/* Public stack access for SVC handlers (and anyone else embedding the VM). */
+int PVM_Pop(PVM_State_s* state, PVM_Word_t* value);
+int PVM_Push(PVM_State_s* state, PVM_Word_t value);
 
 void PVM_PrintInstr(PVM_State_s* state);
 

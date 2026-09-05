@@ -32,6 +32,7 @@ const OpcodeInfo kOpcodeTable[] = {
 	{"LEAVE", 	INSTR_LEAVE, 	false},
 	{"LOADFP", 	INSTR_LOADFP, true},
 	{"STOREFP",	INSTR_STOREFP,true},
+	{"SVC", 		INSTR_SVC, 		false},
 };
 
 const int kOpcodeTableSize = static_cast<int>(sizeof(kOpcodeTable) / sizeof(kOpcodeTable[0]));

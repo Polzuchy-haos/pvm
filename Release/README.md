@@ -52,16 +52,22 @@ pvmc example.pvms -l example.lst           # example.bin + example.lst
 ## pvmcc — компилятор высокоуровневого языка (`.hlc` → `.pvms`)
 
 ```
-pvmcc <input.hlc> [-o output.pvms]
+pvmcc <input.hlc> [-o output.pvms] [-I путь]...
 ```
 
 Только один шаг пайплайна: превращает `.hlc`-исходник в текст ассемблера.
 Результат — обычный `.pvms`, дальше с ним работает `pvmc` (см. выше). Без `-o`
 результат кладётся рядом с исходником с расширением `.pvms`.
 
+`import имя;` в `.hlc`-файле ищет `имя`/`имя.hlc` по порядку: рядом с
+компилируемым файлом → `lib/` рядом с этим самым `pvmcc.exe` (она уже лежит
+тут же, в `Release/lib/`) → каждый путь из `-I` (можно указывать флаг
+несколько раз, проверяются в заданном порядке).
+
 ```
-pvmcc program.hlc              # program.pvms
+pvmcc program.hlc                        # program.pvms
 pvmcc program.hlc -o out.pvms
+pvmcc program.hlc -I ../common -I ../vendor
 ```
 
 Описание языка — в [`../docs/hlc-language.md`](../docs/hlc-language.md).

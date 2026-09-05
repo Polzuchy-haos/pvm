@@ -1,0 +1,9 @@
+# Проверка SVC: pvmsim регистрирует SVC #1 = "напечатать число со стека"
+# (Svc_Print в simulator/pvmsim.c) — это демонстрация вызова в Си-код.
+.entry main
+
+main:
+  PUSH 42
+  PUSH 1    # номер вызова: SVC #1 (print)
+  SVC
+  HALT

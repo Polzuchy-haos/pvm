@@ -1,8 +1,11 @@
 #include "codegen.h"
+#include "modulepath.h"
 #include "pvm.h"
 
+#include <set>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -19,7 +22,8 @@ struct GlobalInfo {
 
 class Codegen {
 public:
-	explicit Codegen(const std::string& fileName) : file_(fileName) {}
+	Codegen(const std::string& fileName, const std::vector<std::string>& includePaths)
+		: file_(fileName), includePaths_(includePaths) {}
 
 	std::string Run(const Program& program){
 		for(const FuncDecl& f : program.funcs){
@@ -38,37 +42,114 @@ public:
 											"(it has no caller, so a return value has nowhere to go)");
 
 		for(const GlobalVarDecl& g : program.globals)
-			RegisterGlobal(g);
+			RegisterGlobalMeta(g);
+
+		/*
+		 * Compile every function unconditionally (into its own text buffer, not
+		 * the final output) -- this is what catches errors (undefined names, arity
+		 * mismatches, etc.) in dead code too, same as a real compiler type-checks
+		 * unreferenced functions before a linker ever gets a chance to drop them.
+		 * EmitCall/EmitVarRead/EmitVarWrite/EmitArrayRead/EmitArrayAssign record
+		 * the call graph and global references as a side effect along the way.
+		 */
+		for(const FuncDecl& f : program.funcs){
+			if(f.isExtern) continue; /* no body to compile -- implementation lives in hand-written .pvms */
+			std::ostringstream funcBuf;
+			activeOut_ = &funcBuf;
+			EmitFunction(f, program);
+			funcText_[f.name] = funcBuf.str();
+		}
+		activeOut_ = &out_;
+
+		/* Now do the actual dead-code elimination: only "main" and whatever it
+		 * transitively calls survive; only globals referenced by surviving
+		 * functions keep their RAM slot (or their .const line, for @address ones). */
+		std::set<std::string> reachable = ComputeReachable("main");
+
+		std::set<std::string> usedGlobals;
+		for(const std::string& fn : reachable){
+			auto it = globalRefsByFunc_.find(fn);
+			if(it != globalRefsByFunc_.end())
+				usedGlobals.insert(it->second.begin(), it->second.end());
+		}
+
+		for(const GlobalVarDecl& g : program.globals)
+			if(usedGlobals.count(g.name))
+				AssignGlobalAddress(g);
+
+		/* Only pull in assembly for extern functions that actually survived
+		 * dead-code elimination, same rule as everything else. Resolved to an
+		 * absolute path here (not left as a bareword) because the generated
+		 * .pvms lives in a different directory (typically the build tree) than
+		 * the .hlc source the "from" name should be resolved relative to --
+		 * pvmc's own (relative-only) ".import" then just works unmodified,
+		 * since an absolute path always wins over path-joining. */
+		std::set<std::string> asmImports;
+		for(const FuncDecl& f : program.funcs)
+			if(f.isExtern && reachable.count(f.name))
+				asmImports.insert(ResolveModulePath(file_, f.asmFile, ".pvms", includePaths_));
 
 		out_ << ".entry main\n\n";
 
+		for(const std::string& asmPath : asmImports)
+			out_ << ".import " << asmPath << "\n";
+		if(!asmImports.empty()) out_ << "\n";
+
 		for(const GlobalVarDecl& g : program.globals)
-			EmitGlobalConst(g);
-		if(!program.globals.empty()) out_ << "\n";
+			if(usedGlobals.count(g.name))
+				EmitGlobalConst(g);
+		if(!usedGlobals.empty()) out_ << "\n";
 
 		for(const FuncDecl& f : program.funcs)
-			EmitFunction(f, program);
+			if(reachable.count(f.name))
+				out_ << funcText_[f.name];
 
 		return out_.str();
 	}
 
 private:
 	std::string 													 file_;
+	std::vector<std::string> 							 includePaths_;
 	std::ostringstream 										 out_;
+	std::ostringstream* 									 activeOut_ = &out_;
 	std::unordered_map<std::string, FuncInfo>   funcs_;
 	std::unordered_map<std::string, GlobalInfo> globals_;
+	std::unordered_map<std::string, std::string> funcText_;
+	std::unordered_map<std::string, std::set<std::string>> callGraph_;
+	std::unordered_map<std::string, std::set<std::string>> globalRefsByFunc_;
 	int 																	 nextRamAddr_ = 0;
 	int 																	 labelCounter_ = 0;
 
 	/* per-function codegen state */
+	std::string currentFuncName_;
 	std::unordered_map<std::string, int> locals_;
 	int 	nextLocalOffset_ 		= 0;
 	bool 	curFuncIsVoid_ 			= false;
 	bool 	curFuncIsMain_ 			= false;
 	int 	curReturnSlotOffset_ = 0;
 
-	void Line(const std::string& s){ out_ << "  " << s << "\n"; }
-	void Label(const std::string& name){ out_ << name << ":\n"; }
+	void Line(const std::string& s){ *activeOut_ << "  " << s << "\n"; }
+	void Label(const std::string& name){ *activeOut_ << name << ":\n"; }
+
+	std::set<std::string> ComputeReachable(const std::string& root){
+		std::set<std::string> reachable;
+		std::vector<std::string> worklist = {root};
+
+		while(!worklist.empty()){
+			std::string cur = worklist.back();
+			worklist.pop_back();
+			if(!reachable.insert(cur).second) continue;
+
+			auto it = callGraph_.find(cur);
+			if(it != callGraph_.end())
+				for(const std::string& callee : it->second) worklist.push_back(callee);
+		}
+
+		return reachable;
+	}
+
+	void RecordCall(const std::string& callee){ callGraph_[currentFuncName_].insert(callee); }
+	void RecordGlobalUse(const std::string& name){ globalRefsByFunc_[currentFuncName_].insert(name); }
 
 	std::string NewLabel(const std::string& prefix){
 		return "__" + prefix + std::to_string(labelCounter_++);
@@ -80,7 +161,12 @@ private:
 
 	/* ---- globals ---- */
 
-	void RegisterGlobal(const GlobalVarDecl& g){
+	/* Validate + record shape (array-ness/size) so EmitArrayRead/EmitVarRead can
+	 * look a name up while compiling function bodies. Deliberately does NOT
+	 * assign a RAM address yet -- that only happens for globals that survive
+	 * dead-code elimination (see AssignGlobalAddress), so an unused global costs
+	 * nothing and doesn't shift the addresses of the ones that are kept. */
+	void RegisterGlobalMeta(const GlobalVarDecl& g){
 		if(globals_.count(g.name) || funcs_.count(g.name))
 			Fail(g.line, "'" + g.name + "' redefined");
 
@@ -88,19 +174,22 @@ private:
 		if(size <= 0)
 			Fail(g.line, "array size must be positive");
 
-		int addr;
+		globals_[g.name] = GlobalInfo{g.isArray, size, /*address*/ 0};
+	}
+
+	void AssignGlobalAddress(const GlobalVarDecl& g){
+		GlobalInfo& info = globals_[g.name];
+
 		if(g.hasAddress){
-			addr = g.address;
-		}
-		else{
-			if(nextRamAddr_ + size > PVM_CFG_RAM_SIZE)
-				Fail(g.line, "global '" + g.name + "' does not fit in RAM (PVM_CFG_RAM_SIZE=" +
-											std::to_string(PVM_CFG_RAM_SIZE) + ")");
-			addr = nextRamAddr_;
-			nextRamAddr_ += size;
+			info.address = g.address;
+			return;
 		}
 
-		globals_[g.name] = GlobalInfo{g.isArray, size, addr};
+		if(nextRamAddr_ + info.size > PVM_CFG_RAM_SIZE)
+			Fail(g.line, "global '" + g.name + "' does not fit in RAM (PVM_CFG_RAM_SIZE=" +
+										std::to_string(PVM_CFG_RAM_SIZE) + ")");
+		info.address = nextRamAddr_;
+		nextRamAddr_ += info.size;
 	}
 
 	void EmitGlobalConst(const GlobalVarDecl& g){
@@ -114,13 +203,14 @@ private:
 			if(!lit)
 				Fail(g.line, "global initializer for '" + g.name + "' must be a constant integer literal");
 			Line("PUSH " + std::to_string(lit->value));
-			Line("STORE " + g.name);
+			EmitVarWrite(g.line, g.name); /* also marks the global as used, same as any other write */
 		}
 	}
 
 	/* ---- functions ---- */
 
 	void EmitFunction(const FuncDecl& f, const Program& program){
+		currentFuncName_ 		= f.name;
 		locals_.clear();
 		nextLocalOffset_ 		= 0;
 		curFuncIsVoid_ 			= f.isVoid;
@@ -144,7 +234,7 @@ private:
 
 		Line("LEAVE");
 		Line(curFuncIsMain_ ? "HALT" : "RET");
-		out_ << "\n";
+		*activeOut_ << "\n";
 	}
 
 	/* ---- statements ---- */
@@ -246,7 +336,18 @@ private:
 		if(auto x = dynamic_cast<AssignExpr*>(e)){ EmitAssign(x); return; }
 		if(auto x = dynamic_cast<ArrayAssignExpr*>(e)){ EmitArrayAssign(x); return; }
 		if(auto x = dynamic_cast<CallExpr*>(e)){ EmitCall(x, true); return; }
+		if(auto x = dynamic_cast<SvcCallExpr*>(e)){ EmitSvcCall(x); return; }
 		Fail(e->line, "internal: unknown expression node");
+	}
+
+	/* By convention every SVC handler pops its own arguments and pushes exactly
+	 * one result (see docs/pvms-language.md) -- the compiler can't verify this,
+	 * it's a runtime contract between the .hlc program and the registered
+	 * PVM_SvcFunc, same as any real syscall ABI. */
+	void EmitSvcCall(SvcCallExpr* x){
+		for(const ExprPtr& arg : x->args) EmitExpr(arg.get());
+		EmitExpr(x->number.get());
+		Line("SVC");
 	}
 
 	void EmitVarRead(int line, const std::string& name){
@@ -256,6 +357,7 @@ private:
 		auto git = globals_.find(name);
 		if(git != globals_.end()){
 			if(git->second.isArray) Fail(line, "'" + name + "' is an array; use " + name + "[index]");
+			RecordGlobalUse(name);
 			Line("LOAD " + name);
 			return;
 		}
@@ -269,6 +371,7 @@ private:
 		auto git = globals_.find(name);
 		if(git != globals_.end()){
 			if(git->second.isArray) Fail(line, "'" + name + "' is an array; use " + name + "[index] = ...");
+			RecordGlobalUse(name);
 			Line("STORE " + name);
 			return;
 		}
@@ -279,6 +382,7 @@ private:
 		auto git = globals_.find(x->name);
 		if(git == globals_.end()) Fail(x->line, "undefined array '" + x->name + "'");
 		if(!git->second.isArray) Fail(x->line, "'" + x->name + "' is not an array");
+		RecordGlobalUse(x->name);
 
 		EmitExpr(x->index.get());
 		Line("PUSH " + x->name);
@@ -290,6 +394,7 @@ private:
 		auto git = globals_.find(x->name);
 		if(git == globals_.end()) Fail(x->line, "undefined array '" + x->name + "'");
 		if(!git->second.isArray) Fail(x->line, "'" + x->name + "' is not an array");
+		RecordGlobalUse(x->name);
 
 		EmitExpr(x->value.get());
 		Line("DUP");
@@ -315,6 +420,8 @@ private:
 										" argument(s), got " + std::to_string(call->args.size()));
 		if(info.isVoid && wantValue)
 			Fail(call->line, "cannot use void function '" + call->name + "' as a value");
+
+		RecordCall(call->name);
 
 		if(!info.isVoid) Line("PUSH 0"); /* reserve the return slot */
 		for(const ExprPtr& arg : call->args) EmitExpr(arg.get());
@@ -391,7 +498,8 @@ private:
 
 } // namespace
 
-std::string Generate(const Program& program, const std::string& fileName){
-	Codegen codegen(fileName);
+std::string Generate(const Program& program, const std::string& fileName,
+											const std::vector<std::string>& includePaths){
+	Codegen codegen(fileName, includePaths);
 	return codegen.Run(program);
 }

@@ -28,8 +28,11 @@ public:
 				else
 					program.globals.push_back(ParseGlobalTailAfterName(false, name));
 			}
+			else if(Check(TokenType::KwExtern)){
+				program.funcs.push_back(ParseExternFunc());
+			}
 			else{
-				Fail("expected a global declaration or a function ('int'/'void'/'volatile')");
+				Fail("expected a global declaration or a function ('int'/'void'/'volatile'/'extern')");
 			}
 		}
 
@@ -122,6 +125,45 @@ private:
 		return f;
 	}
 
+	/*
+	 * extern int f(int a, int b) from asmfile;
+	 * No body: the implementation is a hand-written .pvms label named `f`,
+	 * pulled in via ".import asmfile" (codegen resolves asmfile to a real
+	 * path and emits that -- see hlc/codegen.cpp). The compiler trusts that
+	 * the label follows the same ENTER/LEAVE/LOADFP/STOREFP calling
+	 * convention it generates for every other function.
+	 */
+	FuncDecl ParseExternFunc(){
+		Token kw = Expect(TokenType::KwExtern, "expected 'extern'");
+
+		FuncDecl f;
+		f.isExtern = true;
+		f.line = kw.line;
+
+		if(Check(TokenType::KwVoid)){ f.isVoid = true; Advance(); }
+		else Expect(TokenType::KwInt, "expected 'int' or 'void' after 'extern'");
+
+		Token name = Expect(TokenType::Identifier, "expected a function name");
+		f.name = name.text;
+
+		Expect(TokenType::LParen, "expected '(' after function name");
+		if(!Check(TokenType::RParen)){
+			do{
+				Expect(TokenType::KwInt, "expected 'int' in parameter list");
+				Token p = Expect(TokenType::Identifier, "expected a parameter name");
+				f.params.push_back(Param{p.text});
+			} while(Match(TokenType::Comma));
+		}
+		Expect(TokenType::RParen, "expected ')'");
+
+		Expect(TokenType::KwFrom, "expected 'from' after extern function signature");
+		Token asmFile = Expect(TokenType::Identifier, "expected an assembly file name after 'from'");
+		f.asmFile = asmFile.text;
+
+		Expect(TokenType::Semicolon, "expected ';'");
+		return f;
+	}
+
 	/* Function body: local declarations (C89-style, must come first), then statements. */
 	std::unique_ptr<BlockStmt> ParseFuncBody(){
 		auto block = std::make_unique<BlockStmt>();
@@ -171,6 +213,14 @@ private:
 		}
 		if(Check(TokenType::KwInt))
 			Fail("local declarations must appear at the very start of the function body");
+
+		if(Check(TokenType::KwSvc)){
+			auto stmt = std::make_unique<ExprStmt>();
+			stmt->line = Cur().line;
+			stmt->expr = ParseSvcCall();
+			Expect(TokenType::Semicolon, "expected ';'");
+			return stmt;
+		}
 
 		auto stmt = std::make_unique<ExprStmt>();
 		stmt->line = Cur().line;
@@ -410,7 +460,22 @@ private:
 		return ParsePrimary();
 	}
 
+	/* svc(numberExpr, arg1, ..., argN) */
+	ExprPtr ParseSvcCall(){
+		Token kw = Expect(TokenType::KwSvc, "expected 'svc'");
+		Expect(TokenType::LParen, "expected '(' after 'svc'");
+
+		auto call = std::make_unique<SvcCallExpr>();
+		call->line = kw.line;
+		call->number = ParseExpr();
+		while(Match(TokenType::Comma)) call->args.push_back(ParseExpr());
+
+		Expect(TokenType::RParen, "expected ')'");
+		return call;
+	}
+
 	ExprPtr ParsePrimary(){
+		if(Check(TokenType::KwSvc)) return ParseSvcCall();
 		if(Check(TokenType::IntLiteral)){
 			Token t = Advance();
 			auto e = std::make_unique<IntLiteralExpr>();

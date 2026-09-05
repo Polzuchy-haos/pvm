@@ -58,6 +58,14 @@ struct CallExpr : Expr {
 	std::vector<ExprPtr> args;
 };
 
+/* svc(numberExpr, arg1, ..., argN) -- pops the call number and dispatches to
+ * a C handler at runtime; by convention it always leaves exactly one value
+ * on the stack (the handler's result), same as any other Expr. */
+struct SvcCallExpr : Expr {
+	ExprPtr 						 number;
+	std::vector<ExprPtr> args;
+};
+
 struct Stmt {
 	int line = 0;
 	virtual ~Stmt() = default;
@@ -109,7 +117,9 @@ struct FuncDecl {
 	bool 									isVoid = false;
 	std::string 					name;
 	std::vector<Param> 		params;
-	std::unique_ptr<BlockStmt> body;
+	std::unique_ptr<BlockStmt> body; /* null for "extern ... from asmFile;" */
+	bool 									isExtern = false;
+	std::string 					asmFile; /* only meaningful when isExtern */
 	int 									line = 0;
 };
 

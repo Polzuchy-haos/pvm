@@ -27,6 +27,9 @@ set_tests_properties(run_test_new_instructions PROPERTIES PASS_REGULAR_EXPRESSIO
 add_test(NAME run_test_frame_pointer COMMAND $<TARGET_FILE:pvmsim> ${PVM_TESTFP_BYTECODE})
 set_tests_properties(run_test_frame_pointer PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
+add_test(NAME run_test_svc COMMAND $<TARGET_FILE:pvmsim> ${PVM_TESTSVC_BYTECODE})
+set_tests_properties(run_test_svc PROPERTIES PASS_REGULAR_EXPRESSION "SVC print -> 42")
+
 add_test(NAME run_hlc_square COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SQUARE_BYTECODE})
 set_tests_properties(run_hlc_square PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
@@ -35,3 +38,15 @@ set_tests_properties(run_hlc_counter PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim:
 
 add_test(NAME run_hlc_arrays_and_logic COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_ARRLOGIC_BYTECODE})
 set_tests_properties(run_hlc_arrays_and_logic PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
+
+add_test(NAME run_hlc_import_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_IMPORTDEMO_BYTECODE})
+set_tests_properties(run_hlc_import_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
+
+add_test(NAME run_hlc_svc_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SVCDEMO_BYTECODE})
+set_tests_properties(run_hlc_svc_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 42")
+
+add_test(NAME run_hlc_extern_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_EXTERNDEMO_BYTECODE})
+set_tests_properties(run_hlc_extern_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
+
+add_test(NAME run_hlc_time_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_TIMEDEMO_BYTECODE})
+set_tests_properties(run_hlc_time_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x1 -> 10")

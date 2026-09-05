@@ -83,7 +83,7 @@ function(pvm_compile_hlc_example name hlc_src)
 		OUTPUT ${generated_pvms}
 		COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_BYTECODE_DIR}
 		COMMAND $<TARGET_FILE:pvmcc> ${hlc_src} -o ${generated_pvms}
-		DEPENDS pvmcc ${hlc_src}
+		DEPENDS pvmcc ${PVM_LIB_STAMP} ${hlc_src}
 		COMMENT "Compiling ${name} (hlc -> pvms)"
 	)
 
@@ -94,15 +94,29 @@ endfunction()
 pvm_compile_example(bytecode_listing 			${CMAKE_SOURCE_DIR}/example/bytecode_listing.pvms)
 pvm_compile_example(test_new_instructions 	${CMAKE_SOURCE_DIR}/example/test_new_instructions.pvms)
 pvm_compile_example(test_frame_pointer 		${CMAKE_SOURCE_DIR}/example/test_frame_pointer.pvms)
+pvm_compile_example(test_svc 							${CMAKE_SOURCE_DIR}/example/test_svc.pvms)
 
 pvm_compile_hlc_example(square 						${CMAKE_SOURCE_DIR}/example/square.hlc)
 pvm_compile_hlc_example(counter 						${CMAKE_SOURCE_DIR}/example/counter.hlc)
 pvm_compile_hlc_example(arrays_and_logic 	${CMAKE_SOURCE_DIR}/example/arrays_and_logic.hlc)
 pvm_compile_hlc_example(blink 							${CMAKE_SOURCE_DIR}/example/blink.hlc)
+pvm_compile_hlc_example(import_demo 				${CMAKE_SOURCE_DIR}/example/import_demo.hlc)
+pvm_compile_hlc_example(svc_demo 					${CMAKE_SOURCE_DIR}/example/svc_demo.hlc)
+pvm_compile_hlc_example(extern_demo 				${CMAKE_SOURCE_DIR}/example/extern_demo.hlc)
+pvm_compile_hlc_example(time_demo 					${CMAKE_SOURCE_DIR}/example/time_demo.hlc)
+# lib/mathlib.hlc and lib/time.hlc have no main() -- they're modules meant to
+# be "import"-ed (see import_demo.hlc / time_demo.hlc), not compiled
+# standalone. Same for example/fastmath.pvms, pulled in by extern_demo.hlc's
+# "extern ... from fastmath;".
 
 set(PVM_EXAMPLE_BYTECODE 		${bytecode_listing_BYTECODE} 			PARENT_SCOPE)
 set(PVM_TESTINSTR_BYTECODE ${test_new_instructions_BYTECODE} 	PARENT_SCOPE)
 set(PVM_TESTFP_BYTECODE 		${test_frame_pointer_BYTECODE} 		PARENT_SCOPE)
+set(PVM_TESTSVC_BYTECODE 	${test_svc_BYTECODE} 							PARENT_SCOPE)
 set(PVM_HLC_SQUARE_BYTECODE 			${square_BYTECODE} 						PARENT_SCOPE)
 set(PVM_HLC_COUNTER_BYTECODE 			${counter_BYTECODE} 					PARENT_SCOPE)
 set(PVM_HLC_ARRLOGIC_BYTECODE 		${arrays_and_logic_BYTECODE} 	PARENT_SCOPE)
+set(PVM_HLC_IMPORTDEMO_BYTECODE 	${import_demo_BYTECODE} 			PARENT_SCOPE)
+set(PVM_HLC_SVCDEMO_BYTECODE 			${svc_demo_BYTECODE} 					PARENT_SCOPE)
+set(PVM_HLC_EXTERNDEMO_BYTECODE 	${extern_demo_BYTECODE} 			PARENT_SCOPE)
+set(PVM_HLC_TIMEDEMO_BYTECODE 		${time_demo_BYTECODE} 				PARENT_SCOPE)

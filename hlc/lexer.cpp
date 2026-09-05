@@ -1,7 +1,12 @@
 #include "lexer.h"
+#include "modulepath.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <unordered_map>
 
 namespace {
@@ -16,6 +21,10 @@ const std::unordered_map<std::string, TokenType> kKeywords = {
 	{"for", 			TokenType::KwFor},
 	{"return", 		TokenType::KwReturn},
 	{"halt", 			TokenType::KwHalt},
+	{"svc", 			TokenType::KwSvc},
+	{"import", 		TokenType::KwImport},
+	{"extern", 		TokenType::KwExtern},
+	{"from", 			TokenType::KwFrom},
 };
 
 class Lexer {
@@ -184,4 +193,59 @@ private:
 std::vector<Token> Tokenize(const std::string& source, const std::string& fileName){
 	Lexer lexer(source, fileName);
 	return lexer.Run();
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+std::string ReadFile(const std::string& path){
+	std::ifstream in(path, std::ios::binary);
+	if(!in) throw HlcError("pvmcc: error: cannot open '" + path + "'");
+	std::ostringstream buf;
+	buf << in.rdbuf();
+	return buf.str();
+}
+
+
+std::vector<Token> TokenizeFileRecursive(const std::string& path, std::vector<std::string>* importStack,
+																					const std::vector<std::string>& includePaths){
+	fs::path norm = fs::absolute(path).lexically_normal();
+	std::string normStr = norm.string();
+
+	if(std::find(importStack->begin(), importStack->end(), normStr) != importStack->end())
+		throw HlcError("pvmcc: error: circular import involving '" + path + "'");
+
+	std::vector<Token> tokens = Tokenize(ReadFile(path), path);
+	importStack->push_back(normStr);
+
+	std::vector<Token> result;
+	for(size_t i = 0; i < tokens.size(); i++){
+		if(tokens[i].type != TokenType::KwImport){
+			result.push_back(tokens[i]);
+			continue;
+		}
+
+		if(i + 2 >= tokens.size() || tokens[i + 1].type != TokenType::Identifier ||
+			 tokens[i + 2].type != TokenType::Semicolon)
+			throw HlcError(path + ":" + std::to_string(tokens[i].line) + ": error: expected \"import name;\"");
+
+		std::string resolved = ResolveModulePath(path, tokens[i + 1].text, ".hlc", includePaths);
+		std::vector<Token> imported = TokenizeFileRecursive(resolved, importStack, includePaths);
+		if(!imported.empty() && imported.back().type == TokenType::End)
+			imported.pop_back(); /* only the outermost file's End survives to the final stream */
+
+		result.insert(result.end(), imported.begin(), imported.end());
+		i += 2; /* skip the name and ';'; the loop's own i++ skips 'import' itself */
+	}
+
+	importStack->pop_back();
+	return result;
+}
+
+} // namespace
+
+std::vector<Token> TokenizeFile(const std::string& path, const std::vector<std::string>& includePaths){
+	std::vector<std::string> importStack;
+	return TokenizeFileRecursive(path, &importStack, includePaths);
 }

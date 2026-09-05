@@ -29,14 +29,26 @@ int PVM_Init(PVM_State_s* state, char* code, int len){
 	return ERRORCODE_NO_ERROR;
 }
 
-int PVM_UsrSect(PVM_State_s* state, void* ptr, int size, int func){
-	int status = ERRORCODE_NO_ERROR;
-
+int PVM_UsrSect(PVM_State_s* state, PVM_Word_t* ptr, int size){
 	state->usrsect_ptr = ptr;
-	state->usrsect_type = func;
 	state->usrsect_len = size;
 
-	return status;
+	return ERRORCODE_NO_ERROR;
+}
+
+int PVM_RegisterSvc(PVM_State_s* state, const PVM_SvcFunc* table, int count){
+	state->svc_table = table;
+	state->svc_count = count;
+
+	return ERRORCODE_NO_ERROR;
+}
+
+int PVM_Pop(PVM_State_s* state, PVM_Word_t* value){
+	return _StackPop(state, value);
+}
+
+int PVM_Push(PVM_State_s* state, PVM_Word_t value){
+	return _StackPush(state, value);
 }
 
 int PVM_ExecTick(PVM_State_s* state){
@@ -314,6 +326,23 @@ int PVM_ExecTick(PVM_State_s* state){
 			status = ERRORCODE_BAD_DADR;
 	}
 		break;
+
+	case INSTR_SVC:
+	{
+		PVM_Word_t callNum;
+
+		if(_StackItemsNum(state) >= 1){
+			_StackPop(state, &callNum);
+			if(callNum >= 0 && callNum < state->svc_count && state->svc_table[callNum])
+				status = state->svc_table[callNum](state);
+			else
+				status = ERRORCODE_BAD_SVC;
+		}
+		else
+			status = ERRORCODE_EMPTY_STACK;
+	}
+		break;
+
 	case INSTR_CALL:
 		if(_FetchWord(state->PC + 1) < state->code_len){
 			_StackPush(state, (state->PC + 3) - state->code_ptr);
@@ -566,6 +595,12 @@ void PVM_PrintInstr(PVM_State_s* state){
 				printf(	"0x%X STOREFP %i -> BadAdr SP %i - 1\n", adr, offset, _StackItemsNum(state));
 		}
 			break;
+		case INSTR_SVC:
+			if(_StackItemsNum(state) >= 1)
+				printf("0x%X SVC #%i SP %i - 1\n", adr, *_StackIndexOfTop(state, 0), _StackItemsNum(state));
+			else
+				printf("0x%X SVC SP %i\n", adr, _StackItemsNum(state));
+			break;
 		case INSTR_CALL:
 			printf(	"0x%X CALL -> 0x%X SP %i + 1\n", adr,
 							_FetchWord(state->PC + 1),
@@ -645,14 +680,7 @@ static int _DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data){
 	else if(state->usrsect_ptr != 0 &&
 					adr >= PVM_CFG_USRSECT_BGN &&
 					adr < PVM_CFG_USRSECT_BGN + state->usrsect_len)
-	{
-		adr -= PVM_CFG_USRSECT_BGN;
-
-		if(state->usrsect_type)
-			status = ((PVM_FuncSection)(state->usrsect_ptr))(adr, data, 0);
-		else
-			*data = ((PVM_Word_t*)state->usrsect_ptr)[adr];
-	}
+		*data = state->usrsect_ptr[adr - PVM_CFG_USRSECT_BGN];
 	else
 		status = ERRORCODE_BAD_DADR;
 
@@ -667,14 +695,7 @@ static int _DataWrite(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t data){
 	else if(state->usrsect_ptr != 0 &&
 					adr >= PVM_CFG_USRSECT_BGN &&
 					adr < PVM_CFG_USRSECT_BGN + state->usrsect_len)
-	{
-		adr -= PVM_CFG_USRSECT_BGN;
-
-		if(state->usrsect_type)
-			status = ((PVM_FuncSection)(state->usrsect_ptr))(adr, &data, 1);
-		else
-			((PVM_Word_t*)state->usrsect_ptr)[adr] = data;
-	}
+		state->usrsect_ptr[adr - PVM_CFG_USRSECT_BGN] = data;
 	else
 		status = ERRORCODE_BAD_DADR;
 
