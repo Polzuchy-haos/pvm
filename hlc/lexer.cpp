@@ -15,9 +15,11 @@ const std::unordered_map<std::string, TokenType> kKeywords = {
 	{"int", 			TokenType::KwInt},
 	{"void", 			TokenType::KwVoid},
 	{"volatile", 	TokenType::KwVolatile},
+	{"const", 		TokenType::KwConst},
 	{"if", 				TokenType::KwIf},
 	{"else", 			TokenType::KwElse},
 	{"while", 		TokenType::KwWhile},
+	{"do", 				TokenType::KwDo},
 	{"for", 			TokenType::KwFor},
 	{"return", 		TokenType::KwReturn},
 	{"halt", 			TokenType::KwHalt},
@@ -25,6 +27,7 @@ const std::unordered_map<std::string, TokenType> kKeywords = {
 	{"import", 		TokenType::KwImport},
 	{"extern", 		TokenType::KwExtern},
 	{"from", 			TokenType::KwFrom},
+	{"sizeof", 		TokenType::KwSizeof},
 };
 
 class Lexer {
@@ -50,6 +53,10 @@ public:
 			}
 			if(std::isalpha((unsigned char)c) || c == '_'){
 				tokens.push_back(LexIdentifierOrKeyword());
+				continue;
+			}
+			if(c == '\''){
+				tokens.push_back(LexCharLiteral());
 				continue;
 			}
 
@@ -121,6 +128,49 @@ private:
 		return t;
 	}
 
+	/* 'x' or a handful of C-style escapes ('\n' '\t' '\r' '\0' '\\' '\'' '\"')
+	 * -- resolves straight to an IntLiteral holding the ASCII code, so the
+	 * parser/codegen never need to know character literals exist at all. */
+	Token LexCharLiteral(){
+		int startLine = line_;
+		size_t start = pos_;
+		Advance(); /* opening ' */
+
+		if(pos_ >= src_.size()) Fail("unterminated character literal");
+
+		int value;
+		if(Peek() == '\''){
+			Fail("empty character literal");
+		}
+		else if(Peek() == '\\'){
+			Advance();
+			char esc = Peek();
+			if(esc == 'n') 			value = '\n';
+			else if(esc == 't') 	value = '\t';
+			else if(esc == 'r') 	value = '\r';
+			else if(esc == '0') 	value = '\0';
+			else if(esc == '\\') 	value = '\\';
+			else if(esc == '\'') 	value = '\'';
+			else if(esc == '"') 	value = '"';
+			else Fail(std::string("unknown escape sequence '\\") + esc + "' in a character literal");
+			Advance();
+		}
+		else{
+			value = (unsigned char)Peek();
+			Advance();
+		}
+
+		if(Peek() != '\'') Fail("expected closing ' after a character literal");
+		Advance();
+
+		Token t;
+		t.type 			= TokenType::IntLiteral;
+		t.text 			= src_.substr(start, pos_ - start);
+		t.intValue 	= value;
+		t.line 			= startLine;
+		return t;
+	}
+
 	Token LexIdentifierOrKeyword(){
 		int startLine = line_;
 		size_t start = pos_;
@@ -156,23 +206,41 @@ private:
 			case ';': return make(TokenType::Semicolon, 1, ";");
 			case ',': return make(TokenType::Comma, 1, ",");
 			case '@': return make(TokenType::At, 1, "@");
-			case '+': return make(TokenType::Plus, 1, "+");
-			case '-': return make(TokenType::Minus, 1, "-");
-			case '*': return make(TokenType::Star, 1, "*");
-			case '/': return make(TokenType::Slash, 1, "/");
+			case '?': return make(TokenType::Question, 1, "?");
+			case ':': return make(TokenType::Colon, 1, ":");
+			case '+':
+				if(Peek(1) == '+') return make(TokenType::PlusPlus, 2, "++");
+				if(Peek(1) == '=') return make(TokenType::PlusEq, 2, "+=");
+				return make(TokenType::Plus, 1, "+");
+			case '-':
+				if(Peek(1) == '-') return make(TokenType::MinusMinus, 2, "--");
+				if(Peek(1) == '=') return make(TokenType::MinusEq, 2, "-=");
+				return make(TokenType::Minus, 1, "-");
+			case '*':
+				if(Peek(1) == '=') return make(TokenType::StarEq, 2, "*=");
+				return make(TokenType::Star, 1, "*");
+			case '/':
+				if(Peek(1) == '=') return make(TokenType::SlashEq, 2, "/=");
+				return make(TokenType::Slash, 1, "/");
 			case '~': return make(TokenType::Tilde, 1, "~");
-			case '^': return make(TokenType::Caret, 1, "^");
+			case '^':
+				if(Peek(1) == '=') return make(TokenType::CaretEq, 2, "^=");
+				return make(TokenType::Caret, 1, "^");
 			case '&':
 				if(Peek(1) == '&') return make(TokenType::AndAnd, 2, "&&");
+				if(Peek(1) == '=') return make(TokenType::AmpEq, 2, "&=");
 				return make(TokenType::Amp, 1, "&");
 			case '|':
 				if(Peek(1) == '|') return make(TokenType::OrOr, 2, "||");
+				if(Peek(1) == '=') return make(TokenType::PipeEq, 2, "|=");
 				return make(TokenType::Pipe, 1, "|");
 			case '<':
+				if(Peek(1) == '<' && Peek(2) == '=') return make(TokenType::ShlEq, 3, "<<=");
 				if(Peek(1) == '<') return make(TokenType::Shl, 2, "<<");
 				if(Peek(1) == '=') return make(TokenType::Le, 2, "<=");
 				return make(TokenType::Lt, 1, "<");
 			case '>':
+				if(Peek(1) == '>' && Peek(2) == '=') return make(TokenType::ShrEq, 3, ">>=");
 				if(Peek(1) == '>') return make(TokenType::Shr, 2, ">>");
 				if(Peek(1) == '=') return make(TokenType::Ge, 2, ">=");
 				return make(TokenType::Gt, 1, ">");

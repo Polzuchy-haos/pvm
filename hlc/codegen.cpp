@@ -41,6 +41,13 @@ public:
 			throw HlcError(file_ + ": error: 'main' must be declared 'void main()' "
 											"(it has no caller, so a return value has nowhere to go)");
 
+		/* Constants are evaluated in declaration order (each may reference an
+		 * earlier one, C-enum-style) before anything else looks a name up, since
+		 * global metadata (array size) and addresses can themselves be constant
+		 * expressions built out of them. */
+		for(const ConstDecl& c : program.consts)
+			RegisterConst(c);
+
 		for(const GlobalVarDecl& g : program.globals)
 			RegisterGlobalMeta(g);
 
@@ -114,6 +121,7 @@ private:
 	std::ostringstream* 									 activeOut_ = &out_;
 	std::unordered_map<std::string, FuncInfo>   funcs_;
 	std::unordered_map<std::string, GlobalInfo> globals_;
+	std::unordered_map<std::string, int> 			 consts_;
 	std::unordered_map<std::string, std::string> funcText_;
 	std::unordered_map<std::string, std::set<std::string>> callGraph_;
 	std::unordered_map<std::string, std::set<std::string>> globalRefsByFunc_;
@@ -159,6 +167,71 @@ private:
 		throw HlcError(file_ + ":" + std::to_string(line) + ": error: " + msg);
 	}
 
+	/* ---- constants ---- */
+
+	void RegisterConst(const ConstDecl& c){
+		if(funcs_.count(c.name) || consts_.count(c.name))
+			Fail(c.line, "'" + c.name + "' redefined");
+		consts_[c.name] = EvalConstExpr(c.value.get());
+	}
+
+	/* Folds a compile-time constant expression: integer literals, previously
+	 * declared 'const' names, and the usual arithmetic/bitwise/comparison
+	 * operators over them. Nothing that reads memory or has side effects
+	 * (variables, arrays, calls, svc) is allowed here -- there is no "runtime"
+	 * for a constant, only a value the compiler already knows. */
+	int EvalConstExpr(Expr* e){
+		if(auto x = dynamic_cast<IntLiteralExpr*>(e)) return x->value;
+
+		if(auto x = dynamic_cast<VarRefExpr*>(e)){
+			auto it = consts_.find(x->name);
+			if(it == consts_.end())
+				Fail(x->line, "'" + x->name + "' cannot be used in a constant expression "
+											"(only literals and earlier 'const' names can)");
+			return it->second;
+		}
+
+		if(auto x = dynamic_cast<UnaryExpr*>(e)){
+			int v = EvalConstExpr(x->operand.get());
+			if(x->op == "-") return -v;
+			if(x->op == "~") return ~v;
+			if(x->op == "!") return !v;
+			Fail(x->line, "internal: unknown unary operator in constant expression");
+		}
+
+		if(auto x = dynamic_cast<BinaryExpr*>(e)){
+			int l = EvalConstExpr(x->lhs.get());
+			int r = EvalConstExpr(x->rhs.get());
+			if(x->op == "+") 	return l + r;
+			if(x->op == "-") 	return l - r;
+			if(x->op == "*") 	return l * r;
+			if(x->op == "/"){
+				if(r == 0) Fail(x->line, "division by zero in constant expression");
+				return l / r;
+			}
+			if(x->op == "&") 	return l & r;
+			if(x->op == "|") 	return l | r;
+			if(x->op == "^") 	return l ^ r;
+			if(x->op == "<<") return l << r;
+			if(x->op == ">>") return l >> r;
+			if(x->op == "==") return l == r;
+			if(x->op == "!=") return l != r;
+			if(x->op == "<") 	return l < r;
+			if(x->op == ">") 	return l > r;
+			if(x->op == "<=") return l <= r;
+			if(x->op == ">=") return l >= r;
+			if(x->op == "&&") return (l != 0) && (r != 0);
+			if(x->op == "||") return (l != 0) || (r != 0);
+			Fail(x->line, "internal: unknown binary operator in constant expression");
+		}
+
+		if(auto x = dynamic_cast<TernaryExpr*>(e))
+			return EvalConstExpr(x->cond.get()) != 0 ? EvalConstExpr(x->thenExpr.get())
+																								: EvalConstExpr(x->elseExpr.get());
+
+		Fail(e->line, "expected a compile-time constant expression");
+	}
+
 	/* ---- globals ---- */
 
 	/* Validate + record shape (array-ness/size) so EmitArrayRead/EmitVarRead can
@@ -167,12 +240,15 @@ private:
 	 * dead-code elimination (see AssignGlobalAddress), so an unused global costs
 	 * nothing and doesn't shift the addresses of the ones that are kept. */
 	void RegisterGlobalMeta(const GlobalVarDecl& g){
-		if(globals_.count(g.name) || funcs_.count(g.name))
+		if(globals_.count(g.name) || funcs_.count(g.name) || consts_.count(g.name))
 			Fail(g.line, "'" + g.name + "' redefined");
 
-		int size = g.isArray ? g.arraySize : 1;
+		int size = g.isArray ? EvalConstExpr(g.arraySizeExpr.get()) : 1;
 		if(size <= 0)
 			Fail(g.line, "array size must be positive");
+		if(!g.arrayInit.empty() && (int)g.arrayInit.size() != size)
+			Fail(g.line, "array '" + g.name + "' has " + std::to_string(size) + " element(s) but " +
+										std::to_string(g.arrayInit.size()) + " initializer(s) were given");
 
 		globals_[g.name] = GlobalInfo{g.isArray, size, /*address*/ 0};
 	}
@@ -181,7 +257,7 @@ private:
 		GlobalInfo& info = globals_[g.name];
 
 		if(g.hasAddress){
-			info.address = g.address;
+			info.address = EvalConstExpr(g.addressExpr.get());
 			return;
 		}
 
@@ -198,12 +274,24 @@ private:
 
 	void EmitGlobalInitializers(const Program& program){
 		for(const GlobalVarDecl& g : program.globals){
-			if(!g.init) continue;
-			auto lit = dynamic_cast<IntLiteralExpr*>(g.init.get());
-			if(!lit)
-				Fail(g.line, "global initializer for '" + g.name + "' must be a constant integer literal");
-			Line("PUSH " + std::to_string(lit->value));
-			EmitVarWrite(g.line, g.name); /* also marks the global as used, same as any other write */
+			if(g.init){
+				Line("PUSH " + std::to_string(EvalConstExpr(g.init.get())));
+				EmitVarWrite(g.line, g.name); /* also marks the global as used, same as any other write */
+				continue;
+			}
+			if(!g.arrayInit.empty()){
+				/* One STOREI per element, address computed fresh each time (no DUP
+				 * of a "result value" here, unlike EmitArrayAssign -- this isn't an
+				 * expression, there's nothing for a surrounding expression to use). */
+				for(size_t i = 0; i < g.arrayInit.size(); i++){
+					Line("PUSH " + std::to_string(EvalConstExpr(g.arrayInit[i].get())));
+					Line("PUSH " + std::to_string((int)i));
+					Line("PUSH " + g.name);
+					Line("ADD");
+					Line("STOREI");
+				}
+				RecordGlobalUse(g.name); /* also marks the array as used, same as any other write */
+			}
 		}
 	}
 
@@ -243,6 +331,7 @@ private:
 		if(auto x = dynamic_cast<BlockStmt*>(s)){ for(const StmtPtr& st : x->stmts) EmitStmt(st.get()); return; }
 		if(auto x = dynamic_cast<IfStmt*>(s)){ EmitIf(x); return; }
 		if(auto x = dynamic_cast<WhileStmt*>(s)){ EmitWhile(x); return; }
+		if(auto x = dynamic_cast<DoWhileStmt*>(s)){ EmitDoWhile(x); return; }
 		if(auto x = dynamic_cast<ForStmt*>(s)){ EmitFor(x); return; }
 		if(auto x = dynamic_cast<ReturnStmt*>(s)){ EmitReturn(x); return; }
 		if(dynamic_cast<HaltStmt*>(s)){ Line("HALT"); return; }
@@ -276,6 +365,19 @@ private:
 		EmitStmt(s->body.get());
 		Line("JMP " + labelStart);
 		Label(labelEnd);
+	}
+
+	/* Unlike EmitWhile, the condition check comes after the body -- so the
+	 * body always runs at least once. JNZ back to the top is enough, no JZ
+	 * "skip past the loop" needed since there's no way to skip the first
+	 * iteration. */
+	void EmitDoWhile(DoWhileStmt* s){
+		std::string labelStart = NewLabel("do_start");
+
+		Label(labelStart);
+		EmitStmt(s->body.get());
+		EmitExpr(s->cond.get());
+		Line("JNZ " + labelStart);
 	}
 
 	void EmitFor(ForStmt* s){
@@ -337,6 +439,8 @@ private:
 		if(auto x = dynamic_cast<ArrayAssignExpr*>(e)){ EmitArrayAssign(x); return; }
 		if(auto x = dynamic_cast<CallExpr*>(e)){ EmitCall(x, true); return; }
 		if(auto x = dynamic_cast<SvcCallExpr*>(e)){ EmitSvcCall(x); return; }
+		if(auto x = dynamic_cast<SizeofExpr*>(e)){ EmitSizeof(x); return; }
+		if(auto x = dynamic_cast<TernaryExpr*>(e)){ EmitTernary(x); return; }
 		Fail(e->line, "internal: unknown expression node");
 	}
 
@@ -350,9 +454,25 @@ private:
 		Line("SVC");
 	}
 
+	/* Deliberately does NOT call RecordGlobalUse: the array's size is known at
+	 * compile time regardless of whether its storage ever gets touched, so
+	 * "only sizeof(arr) used, arr itself never read/written" still lets dead-
+	 * code elimination drop the array's RAM slot entirely (see docs). Not
+	 * usable in a 'const' initializer or an @address/[size] expression -- see
+	 * ast.h's SizeofExpr comment for why. */
+	void EmitSizeof(SizeofExpr* x){
+		auto git = globals_.find(x->name);
+		if(git == globals_.end() || !git->second.isArray)
+			Fail(x->line, "'sizeof' expects the name of a global array");
+		Line("PUSH " + std::to_string(git->second.size));
+	}
+
 	void EmitVarRead(int line, const std::string& name){
 		auto it = locals_.find(name);
 		if(it != locals_.end()){ Line("LOADFP " + std::to_string(it->second)); return; }
+
+		auto cit = consts_.find(name);
+		if(cit != consts_.end()){ Line("PUSH " + std::to_string(cit->second)); return; }
 
 		auto git = globals_.find(name);
 		if(git != globals_.end()){
@@ -368,6 +488,8 @@ private:
 		auto it = locals_.find(name);
 		if(it != locals_.end()){ Line("STOREFP " + std::to_string(it->second)); return; }
 
+		if(consts_.count(name)) Fail(line, "cannot assign to constant '" + name + "'");
+
 		auto git = globals_.find(name);
 		if(git != globals_.end()){
 			if(git->second.isArray) Fail(line, "'" + name + "' is an array; use " + name + "[index] = ...");
@@ -379,6 +501,7 @@ private:
 	}
 
 	void EmitArrayRead(ArrayIndexExpr* x){
+		if(consts_.count(x->name)) Fail(x->line, "'" + x->name + "' is a constant, not an array");
 		auto git = globals_.find(x->name);
 		if(git == globals_.end()) Fail(x->line, "undefined array '" + x->name + "'");
 		if(!git->second.isArray) Fail(x->line, "'" + x->name + "' is not an array");
@@ -391,6 +514,7 @@ private:
 	}
 
 	void EmitArrayAssign(ArrayAssignExpr* x){
+		if(consts_.count(x->name)) Fail(x->line, "'" + x->name + "' is a constant, not an array");
 		auto git = globals_.find(x->name);
 		if(git == globals_.end()) Fail(x->line, "undefined array '" + x->name + "'");
 		if(!git->second.isArray) Fail(x->line, "'" + x->name + "' is not an array");
@@ -402,6 +526,21 @@ private:
 		Line("PUSH " + x->name);
 		Line("ADD");
 		Line("STOREI");
+	}
+
+	/* Same shape as EmitIf, but both arms leave a value (the ternary's own
+	 * invariant is "exactly one value on the stack", same as every Expr). */
+	void EmitTernary(TernaryExpr* x){
+		std::string labelElse = NewLabel("ternary_else");
+		std::string labelEnd 	= NewLabel("ternary_end");
+
+		EmitExpr(x->cond.get());
+		Line("JZ " + labelElse);
+		EmitExpr(x->thenExpr.get());
+		Line("JMP " + labelEnd);
+		Label(labelElse);
+		EmitExpr(x->elseExpr.get());
+		Label(labelEnd);
 	}
 
 	void EmitAssign(AssignExpr* x){

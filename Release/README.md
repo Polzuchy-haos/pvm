@@ -9,6 +9,10 @@
 (низкоуровневый ассемблер) и [`../docs/hlc-language.md`](../docs/hlc-language.md)
 (высокоуровневый C-подобный язык).
 
+Подсветка синтаксиса `.hlc`/`.pvms` для VS Code — в
+[`vscode-extension/`](vscode-extension/README.md) (устанавливается вручную,
+без Marketplace).
+
 ## Пайплайн
 
 ```

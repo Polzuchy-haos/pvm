@@ -42,6 +42,12 @@ struct BinaryExpr : Expr {
 	ExprPtr 		lhs, rhs;
 };
 
+/* cond ? thenExpr : elseExpr -- exactly one branch is evaluated at runtime
+ * (like if/else), leaving exactly one value on the stack either way. */
+struct TernaryExpr : Expr {
+	ExprPtr cond, thenExpr, elseExpr;
+};
+
 struct AssignExpr : Expr {
 	std::string name;
 	ExprPtr 		value;
@@ -66,6 +72,16 @@ struct SvcCallExpr : Expr {
 	std::vector<ExprPtr> args;
 };
 
+/* sizeof(arrayName) -- resolves to the array's element count, known once its
+ * declaration has been registered (see Codegen::RegisterGlobalMeta); folds
+ * straight to "PUSH <size>", same as a literal. Not usable in a 'const'
+ * initializer (constants are evaluated before any global is registered --
+ * see Codegen::Run) or in an @address/[size] position -- only inside
+ * function bodies. */
+struct SizeofExpr : Expr {
+	std::string name;
+};
+
 struct Stmt {
 	int line = 0;
 	virtual ~Stmt() = default;
@@ -83,6 +99,13 @@ struct IfStmt : Stmt {
 };
 
 struct WhileStmt : Stmt {
+	ExprPtr cond;
+	StmtPtr body;
+};
+
+/* do <body> while (<cond>); -- body runs once unconditionally, then repeats
+ * while cond holds (checked after the body, unlike WhileStmt). */
+struct DoWhileStmt : Stmt {
 	ExprPtr cond;
 	StmtPtr body;
 };
@@ -125,17 +148,32 @@ struct FuncDecl {
 
 struct GlobalVarDecl {
 	std::string name;
-	bool 				isVolatile 	= false;
-	bool 				hasAddress 	= false;
-	int 				address 		= 0;
-	bool 				isArray 		= false;
-	int 				arraySize 	= 0;
-	ExprPtr 		init; /* may be null; must fold to a constant (see codegen) */
-	int 				line 				= 0;
+	bool 				isVolatile 		= false;
+	bool 				hasAddress 		= false;
+	ExprPtr 		addressExpr; 	/* valid when hasAddress; must fold to a constant (see codegen) */
+	bool 				isArray 			= false;
+	ExprPtr 		arraySizeExpr;/* valid when isArray; must fold to a constant (see codegen) */
+	ExprPtr 		init; 				/* scalar initializer; may be null; must fold to a constant (see codegen) */
+	std::vector<ExprPtr> arrayInit; /* array initializer ("= {a, b, ...}"); empty if none; each element must fold to a constant */
+	int 				line 					= 0;
+};
+
+/*
+ * const int NAME = <constant expression>;
+ * Compile-time only: never allocates RAM and never appears in the emitted
+ * .pvms as a symbol -- every use is inlined as a plain "PUSH <value>" (or
+ * folded further, e.g. into a global's address/array size) by the codegen's
+ * constant evaluator (see Codegen::EvalConstExpr).
+ */
+struct ConstDecl {
+	std::string name;
+	ExprPtr 		value;
+	int 				line = 0;
 };
 
 struct Program {
 	std::vector<GlobalVarDecl> globals;
+	std::vector<ConstDecl> 	 consts;
 	std::vector<FuncDecl> 		 funcs;
 };
 

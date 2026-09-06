@@ -14,7 +14,8 @@ public:
 			if(Check(TokenType::KwVolatile)){
 				Advance();
 				Expect(TokenType::KwInt, "expected 'int' after 'volatile'");
-				program.globals.push_back(ParseGlobalTail(true));
+				Token name = Expect(TokenType::Identifier, "expected a global variable name");
+				ParseGlobalDeclList(true, name, program.globals);
 			}
 			else if(Check(TokenType::KwVoid)){
 				Advance();
@@ -26,13 +27,16 @@ public:
 				if(Check(TokenType::LParen))
 					program.funcs.push_back(ParseFuncAfterName(false, name));
 				else
-					program.globals.push_back(ParseGlobalTailAfterName(false, name));
+					ParseGlobalDeclList(false, name, program.globals);
 			}
 			else if(Check(TokenType::KwExtern)){
 				program.funcs.push_back(ParseExternFunc());
 			}
+			else if(Check(TokenType::KwConst)){
+				program.consts.push_back(ParseConstDecl());
+			}
 			else{
-				Fail("expected a global declaration or a function ('int'/'void'/'volatile'/'extern')");
+				Fail("expected a global declaration or a function ('int'/'void'/'volatile'/'const'/'extern')");
 			}
 		}
 
@@ -70,34 +74,71 @@ private:
 
 	/* ---- top level ---- */
 
-	GlobalVarDecl ParseGlobalTail(bool isVolatile){
-		Token name = Expect(TokenType::Identifier, "expected a global variable name");
-		return ParseGlobalTailAfterName(isVolatile, name);
+	/* "{" expr ("," expr)* "}" -- an array initializer's element list. Each
+	 * element must fold to a constant (checked in codegen, same as any other
+	 * global initializer); the parser only enforces the surface syntax. */
+	std::vector<ExprPtr> ParseArrayInitList(){
+		std::vector<ExprPtr> values;
+		Expect(TokenType::LBrace, "expected '{' to start an array initializer");
+		if(!Check(TokenType::RBrace)){
+			do{ values.push_back(ParseExpr()); } while(Match(TokenType::Comma));
+		}
+		Expect(TokenType::RBrace, "expected '}'");
+		return values;
 	}
 
-	GlobalVarDecl ParseGlobalTailAfterName(bool isVolatile, const Token& name){
+	/* One declarator's tail: optional "@ address", optional "[size]", optional
+	 * "= init" (a single expression, or a "{...}" list when it's an array).
+	 * Does NOT consume a trailing ';' or ',' -- see ParseGlobalDeclList. */
+	GlobalVarDecl ParseOneGlobalDeclarator(bool isVolatile, const Token& name){
 		GlobalVarDecl g;
 		g.name 			= name.text;
 		g.isVolatile = isVolatile;
 		g.line 			= name.line;
 
 		if(Match(TokenType::At)){
-			Token addr = Expect(TokenType::IntLiteral, "expected an address after '@'");
-			g.hasAddress = true;
-			g.address 	 = addr.intValue;
+			g.hasAddress 	= true;
+			g.addressExpr = ParseExpr(); /* usually a literal or a 'const', folded in codegen */
 		}
 		if(Match(TokenType::LBracket)){
-			Token size = Expect(TokenType::IntLiteral, "expected an array size");
+			g.isArray 			= true;
+			g.arraySizeExpr = ParseExpr(); /* usually a literal or a 'const', folded in codegen */
 			Expect(TokenType::RBracket, "expected ']'");
-			g.isArray 	 = true;
-			g.arraySize  = size.intValue;
 		}
 		if(Match(TokenType::Assign)){
-			if(g.isArray) Fail("array globals cannot have an initializer in this language version");
-			g.init = ParseExpr();
+			if(g.isArray) g.arrayInit = ParseArrayInitList();
+			else g.init = ParseExpr();
+		}
+		return g;
+	}
+
+	/* "int"/"volatile int" was already consumed; `firstName` is the identifier
+	 * right after it. Parses one or more comma-separated declarators (each may
+	 * have its own "@..."/"[...]"/"=...") and the final ';'. */
+	void ParseGlobalDeclList(bool isVolatile, const Token& firstName, std::vector<GlobalVarDecl>& out){
+		out.push_back(ParseOneGlobalDeclarator(isVolatile, firstName));
+		while(Match(TokenType::Comma)){
+			Token name = Expect(TokenType::Identifier, "expected a global variable name");
+			out.push_back(ParseOneGlobalDeclarator(isVolatile, name));
 		}
 		Expect(TokenType::Semicolon, "expected ';'");
-		return g;
+	}
+
+	/* const int NAME = <constant expression>; -- codegen checks the expression
+	 * actually folds to a constant (see Codegen::EvalConstExpr); the parser
+	 * only enforces the surface syntax. */
+	ConstDecl ParseConstDecl(){
+		Token kw = Expect(TokenType::KwConst, "expected 'const'");
+		Expect(TokenType::KwInt, "expected 'int' after 'const'");
+		Token name = Expect(TokenType::Identifier, "expected a constant name");
+		Expect(TokenType::Assign, "'const' requires an initializer ('= <expression>')");
+
+		ConstDecl c;
+		c.line 	= kw.line;
+		c.name 	= name.text;
+		c.value = ParseExpr();
+		Expect(TokenType::Semicolon, "expected ';'");
+		return c;
 	}
 
 	FuncDecl ParseFunc(bool isVoid){
@@ -172,7 +213,7 @@ private:
 		Expect(TokenType::LBrace, "expected '{'");
 
 		while(Check(TokenType::KwInt)){
-			block->stmts.push_back(ParseVarDecl());
+			ParseVarDeclList(block->stmts);
 		}
 		while(!Check(TokenType::RBrace)){
 			block->stmts.push_back(ParseStatement());
@@ -182,19 +223,23 @@ private:
 		return block;
 	}
 
-	StmtPtr ParseVarDecl(){
+	/* "int" NAME ("=" expr)? ("," NAME ("=" expr)?)* ";" -- appends one
+	 * VarDeclStmt per name, in order, to `out`. */
+	void ParseVarDeclList(std::vector<StmtPtr>& out){
 		Token kw = Expect(TokenType::KwInt, "expected 'int'");
-		Token name = Expect(TokenType::Identifier, "expected a variable name");
-		if(Check(TokenType::LBracket))
-			Fail("local arrays are not supported in this language version (use a global array)");
+		do{
+			Token name = Expect(TokenType::Identifier, "expected a variable name");
+			if(Check(TokenType::LBracket))
+				Fail("local arrays are not supported in this language version (use a global array)");
 
-		auto decl = std::make_unique<VarDeclStmt>();
-		decl->line = kw.line;
-		decl->name = name.text;
-		if(Match(TokenType::Assign))
-			decl->init = ParseExpr();
+			auto decl = std::make_unique<VarDeclStmt>();
+			decl->line = kw.line;
+			decl->name = name.text;
+			if(Match(TokenType::Assign))
+				decl->init = ParseExpr();
+			out.push_back(std::move(decl));
+		} while(Match(TokenType::Comma));
 		Expect(TokenType::Semicolon, "expected ';'");
-		return decl;
 	}
 
 	/* ---- statements (nested blocks: no declarations allowed, see ast.h) ---- */
@@ -203,6 +248,7 @@ private:
 		if(Check(TokenType::LBrace)) return ParseBlock();
 		if(Check(TokenType::KwIf)) return ParseIf();
 		if(Check(TokenType::KwWhile)) return ParseWhile();
+		if(Check(TokenType::KwDo)) return ParseDoWhile();
 		if(Check(TokenType::KwFor)) return ParseFor();
 		if(Check(TokenType::KwReturn)) return ParseReturn();
 		if(Check(TokenType::KwHalt)){
@@ -260,6 +306,18 @@ private:
 		return s;
 	}
 
+	StmtPtr ParseDoWhile(){
+		auto s = std::make_unique<DoWhileStmt>();
+		s->line = Advance().line; /* 'do' */
+		s->body = ParseStatement();
+		Expect(TokenType::KwWhile, "expected 'while' after 'do' block");
+		Expect(TokenType::LParen, "expected '(' after 'while'");
+		s->cond = ParseExpr();
+		Expect(TokenType::RParen, "expected ')'");
+		Expect(TokenType::Semicolon, "expected ';' after 'do ... while (...)'");
+		return s;
+	}
+
 	StmtPtr ParseFor(){
 		auto s = std::make_unique<ForStmt>();
 		s->line = Advance().line; /* 'for' */
@@ -295,7 +353,55 @@ private:
 		return s;
 	}
 
-	/* IDENT "=" expr | IDENT "[" expr "]" "=" expr | IDENT "(" args? ")" */
+	/* Token for one of "+= -= *= /= &= |= ^= <<= >>=", or "" if `t` isn't one. */
+	static std::string CompoundAssignOp(TokenType t){
+		switch(t){
+			case TokenType::PlusEq: 	return "+";
+			case TokenType::MinusEq: return "-";
+			case TokenType::StarEq: 	return "*";
+			case TokenType::SlashEq: return "/";
+			case TokenType::AmpEq: 	return "&";
+			case TokenType::PipeEq: 	return "|";
+			case TokenType::CaretEq: return "^";
+			case TokenType::ShlEq: 	return "<<";
+			case TokenType::ShrEq: 	return ">>";
+			default: 					return "";
+		}
+	}
+
+	/* Desugars "name op= rhs" (and "name++"/"name--", rhs = literal 1) into
+	 * "name = name op rhs" -- reuses AssignExpr/BinaryExpr as-is, so codegen
+	 * needs no changes at all. Only ever applied to plain names (locals,
+	 * globals, consts, params): array elements don't get compound assignment
+	 * in this language version, since desugaring "arr[i] op= rhs" the same
+	 * way would evaluate the index expression `i` twice -- fine if `i` is a
+	 * simple variable, silently wrong if it has a side effect (a call, svc).
+	 */
+	ExprPtr MakeCompoundAssign(const Token& name, const std::string& op, ExprPtr rhs){
+		auto ref = std::make_unique<VarRefExpr>();
+		ref->line = name.line;
+		ref->name = name.text;
+
+		auto bin = std::make_unique<BinaryExpr>();
+		bin->line = name.line;
+		bin->op 	= op;
+		bin->lhs 	= std::move(ref);
+		bin->rhs 	= std::move(rhs);
+
+		auto assign = std::make_unique<AssignExpr>();
+		assign->line 	= name.line;
+		assign->name 	= name.text;
+		assign->value = std::move(bin);
+		return assign;
+	}
+
+	/*
+	 * IDENT "=" expr
+	 * IDENT ("+=".."/=" | "&=" | "|=" | "^=" | "<<=" | ">>=") expr
+	 * IDENT ("++" | "--")
+	 * IDENT "[" expr "]" "=" expr
+	 * IDENT "(" args? ")"
+	 */
 	ExprPtr ParseSimpleStmt(){
 		Token name = Expect(TokenType::Identifier, "expected an identifier");
 
@@ -306,6 +412,22 @@ private:
 			a->value = ParseExpr();
 			return a;
 		}
+
+		std::string compoundOp = CompoundAssignOp(Cur().type);
+		if(!compoundOp.empty()){
+			Advance();
+			return MakeCompoundAssign(name, compoundOp, ParseExpr());
+		}
+
+		if(Check(TokenType::PlusPlus) || Check(TokenType::MinusMinus)){
+			std::string op = Check(TokenType::PlusPlus) ? "+" : "-";
+			Advance();
+			auto one = std::make_unique<IntLiteralExpr>();
+			one->line = name.line;
+			one->value = 1;
+			return MakeCompoundAssign(name, op, std::move(one));
+		}
+
 		if(Match(TokenType::LBracket)){
 			auto a = std::make_unique<ArrayAssignExpr>();
 			a->line = name.line;
@@ -327,12 +449,28 @@ private:
 			return c;
 		}
 
-		Fail("expected '=', '[' or '(' after identifier");
+		Fail("expected '=', a compound assignment, '++', '--', '[' or '(' after identifier");
 	}
 
 	/* ---- expressions ---- */
 
-	ExprPtr ParseExpr(){ return ParseLogicalOr(); }
+	ExprPtr ParseExpr(){ return ParseTernary(); }
+
+	/* cond ? thenExpr : elseExpr -- lowest precedence, right-associative
+	 * (both branches recurse into ParseExpr/ParseTernary, so "a ? b : c ? d : e"
+	 * parses as "a ? b : (c ? d : e)", same as C). */
+	ExprPtr ParseTernary(){
+		ExprPtr cond = ParseLogicalOr();
+		if(!Match(TokenType::Question)) return cond;
+
+		auto t = std::make_unique<TernaryExpr>();
+		t->line = cond->line;
+		t->cond = std::move(cond);
+		t->thenExpr = ParseExpr();
+		Expect(TokenType::Colon, "expected ':' in ternary expression");
+		t->elseExpr = ParseTernary();
+		return t;
+	}
 
 	ExprPtr ParseLogicalOr(){
 		ExprPtr lhs = ParseLogicalAnd();
@@ -476,6 +614,16 @@ private:
 
 	ExprPtr ParsePrimary(){
 		if(Check(TokenType::KwSvc)) return ParseSvcCall();
+		if(Check(TokenType::KwSizeof)){
+			Token kw = Advance();
+			Expect(TokenType::LParen, "expected '(' after 'sizeof'");
+			Token name = Expect(TokenType::Identifier, "expected an array name inside 'sizeof(...)'");
+			Expect(TokenType::RParen, "expected ')'");
+			auto s = std::make_unique<SizeofExpr>();
+			s->line = kw.line;
+			s->name = name.text;
+			return s;
+		}
 		if(Check(TokenType::IntLiteral)){
 			Token t = Advance();
 			auto e = std::make_unique<IntLiteralExpr>();

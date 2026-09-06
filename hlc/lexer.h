@@ -14,15 +14,17 @@ enum class TokenType {
 	End,
 	Identifier,
 	IntLiteral,
-	KwInt, KwVoid, KwVolatile, KwIf, KwElse, KwWhile, KwFor, KwReturn, KwHalt,
-	KwSvc, KwImport, KwExtern, KwFrom,
+	KwInt, KwVoid, KwVolatile, KwConst, KwIf, KwElse, KwWhile, KwDo, KwFor, KwReturn, KwHalt,
+	KwSvc, KwImport, KwExtern, KwFrom, KwSizeof,
 	LBrace, RBrace, LParen, RParen, LBracket, RBracket,
-	Semicolon, Comma, At,
+	Semicolon, Comma, At, Question, Colon,
 	Plus, Minus, Star, Slash,
 	Amp, Pipe, Caret, Tilde, Shl, Shr,
 	EqEq, NotEq, Lt, Gt, Le, Ge,
 	AndAnd, OrOr, Not,
 	Assign,
+	PlusEq, MinusEq, StarEq, SlashEq, AmpEq, PipeEq, CaretEq, ShlEq, ShrEq,
+	PlusPlus, MinusMinus,
 };
 
 struct Token {

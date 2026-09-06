@@ -104,6 +104,9 @@ pvm_compile_hlc_example(import_demo 				${CMAKE_SOURCE_DIR}/example/import_demo.
 pvm_compile_hlc_example(svc_demo 					${CMAKE_SOURCE_DIR}/example/svc_demo.hlc)
 pvm_compile_hlc_example(extern_demo 				${CMAKE_SOURCE_DIR}/example/extern_demo.hlc)
 pvm_compile_hlc_example(time_demo 					${CMAKE_SOURCE_DIR}/example/time_demo.hlc)
+pvm_compile_hlc_example(const_demo 				${CMAKE_SOURCE_DIR}/example/const_demo.hlc)
+pvm_compile_hlc_example(sugar_demo 				${CMAKE_SOURCE_DIR}/example/sugar_demo.hlc)
+pvm_compile_hlc_example(more_sugar_demo 		${CMAKE_SOURCE_DIR}/example/more_sugar_demo.hlc)
 # lib/mathlib.hlc and lib/time.hlc have no main() -- they're modules meant to
 # be "import"-ed (see import_demo.hlc / time_demo.hlc), not compiled
 # standalone. Same for example/fastmath.pvms, pulled in by extern_demo.hlc's
@@ -120,3 +123,6 @@ set(PVM_HLC_IMPORTDEMO_BYTECODE 	${import_demo_BYTECODE} 			PARENT_SCOPE)
 set(PVM_HLC_SVCDEMO_BYTECODE 			${svc_demo_BYTECODE} 					PARENT_SCOPE)
 set(PVM_HLC_EXTERNDEMO_BYTECODE 	${extern_demo_BYTECODE} 			PARENT_SCOPE)
 set(PVM_HLC_TIMEDEMO_BYTECODE 		${time_demo_BYTECODE} 				PARENT_SCOPE)
+set(PVM_HLC_CONSTDEMO_BYTECODE 	${const_demo_BYTECODE} 			PARENT_SCOPE)
+set(PVM_HLC_SUGARDEMO_BYTECODE 	${sugar_demo_BYTECODE} 			PARENT_SCOPE)
+set(PVM_HLC_MORESUGARDEMO_BYTECODE ${more_sugar_demo_BYTECODE} 	PARENT_SCOPE)

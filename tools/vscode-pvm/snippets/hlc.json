@@ -1,0 +1,77 @@
+{
+	"Function": {
+		"prefix": "func",
+		"body": ["int ${1:name}(${2:int a}) {", "\t${0:return 0;}", "}"],
+		"description": "int function(params) { ... }"
+	},
+	"Void function": {
+		"prefix": "vfunc",
+		"body": ["void ${1:name}(${2}) {", "\t${0}", "}"],
+		"description": "void function(params) { ... }"
+	},
+	"main": {
+		"prefix": "main",
+		"body": ["void main() {", "\t${0}", "}"],
+		"description": "void main() { ... } -- обязательная точка входа"
+	},
+	"if": {
+		"prefix": "if",
+		"body": ["if (${1:cond}) {", "\t${0}", "}"],
+		"description": "if (cond) { ... }"
+	},
+	"if-else": {
+		"prefix": "ifelse",
+		"body": ["if (${1:cond}) {", "\t${2}", "} else {", "\t${0}", "}"],
+		"description": "if (cond) { ... } else { ... }"
+	},
+	"while": {
+		"prefix": "while",
+		"body": ["while (${1:cond}) {", "\t${0}", "}"],
+		"description": "while (cond) { ... }"
+	},
+	"do-while": {
+		"prefix": "dowhile",
+		"body": ["do {", "\t${0}", "} while (${1:cond});"],
+		"description": "do { ... } while (cond); -- тело выполняется минимум один раз"
+	},
+	"for": {
+		"prefix": "for",
+		"body": ["for (${1:i} = 0; ${1:i} < ${2:count}; ${1:i}++) {", "\t${0}", "}"],
+		"description": "for (i = 0; i < count; i++) { ... }"
+	},
+	"extern from": {
+		"prefix": "extern",
+		"body": "extern ${1:int} ${2:name}(${3:int a}) from ${4:asmfile};",
+		"description": "extern int name(params) from asmfile; -- реализация в написанном вручную .pvms"
+	},
+	"import": {
+		"prefix": "import",
+		"body": "import ${1:name};",
+		"description": "import name; -- подключить файл (рядом / lib/ / -I)"
+	},
+	"const": {
+		"prefix": "const",
+		"body": "const int ${1:NAME} = ${2:value};",
+		"description": "const int NAME = <константное выражение>;"
+	},
+	"volatile MMIO": {
+		"prefix": "volatile",
+		"body": "volatile int ${1:NAME} @ ${2:0x4000};",
+		"description": "volatile int NAME @ адрес; -- переменная периферии"
+	},
+	"svc call": {
+		"prefix": "svc",
+		"body": "svc(${1:number}${2:, args})",
+		"description": "svc(номер, аргументы...) -- вызов в Си-код"
+	},
+	"ternary": {
+		"prefix": "ternary",
+		"body": "${1:cond} ? ${2:thenExpr} : ${3:elseExpr}",
+		"description": "cond ? a : b"
+	},
+	"array with initializer": {
+		"prefix": "arrinit",
+		"body": "int ${1:name}[${2:N}] = {${3:1, 2, 3}};",
+		"description": "int name[N] = {v0, v1, ...}; -- количество значений должно точно совпадать с N"
+	}
+}
