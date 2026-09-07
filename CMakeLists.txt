@@ -18,6 +18,9 @@ add_subdirectory(simulator)
 
 enable_testing()
 
+add_test(NAME run_pvmdbg_test COMMAND $<TARGET_FILE:pvmdbg_test>)
+set_tests_properties(run_pvmdbg_test PROPERTIES PASS_REGULAR_EXPRESSION "ALL OK")
+
 add_test(NAME run_bytecode_listing COMMAND $<TARGET_FILE:pvmsim> ${PVM_EXAMPLE_BYTECODE})
 set_tests_properties(run_bytecode_listing PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
