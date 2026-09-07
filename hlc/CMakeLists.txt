@@ -35,4 +35,6 @@ add_custom_command(
 )
 add_custom_target(pvmcc_lib ALL DEPENDS ${PVM_LIB_STAMP})
 
+pvm_publish_tool(pvmcc)
+
 set(PVM_LIB_STAMP ${PVM_LIB_STAMP} PARENT_SCOPE)

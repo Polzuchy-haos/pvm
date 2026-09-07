@@ -31,6 +31,9 @@ if(MINGW)
 	target_link_options(pvmdisasm PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
+pvm_publish_tool(pvmc)
+pvm_publish_tool(pvmdisasm)
+
 # Run every example .pvms through the whole toolchain at build time, so there's
 # always a known-good set of outputs to look at (bin/hex/carray/listing/disasm)
 # and something for the CTest smoke tests (see top-level CMakeLists.txt) to run.

@@ -11,6 +11,23 @@ if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# Release/ is a checked-in snapshot of the built command-line tools, so that
+# someone can use the toolchain without building it (see Release/README.md).
+# Publishing on every build is what keeps that snapshot honest -- a stale binary
+# sitting next to a fresh one is worse than no snapshot at all. copy_if_different
+# means an unchanged tool is left alone, so builds that changed nothing leave the
+# working tree clean.
+set(PVM_RELEASE_DIR ${CMAKE_SOURCE_DIR}/Release)
+
+function(pvm_publish_tool target)
+	add_custom_command(TARGET ${target} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+						$<TARGET_FILE:${target}>
+						${PVM_RELEASE_DIR}/$<TARGET_FILE_NAME:${target}>
+		COMMENT "Publishing ${target} to Release/"
+	)
+endfunction()
+
 add_subdirectory(pvm)
 add_subdirectory(hlc)
 add_subdirectory(compilator)
