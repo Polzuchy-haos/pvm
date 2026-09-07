@@ -15,11 +15,20 @@ add_subdirectory(pvm)
 add_subdirectory(hlc)
 add_subdirectory(compilator)
 add_subdirectory(simulator)
+add_subdirectory(debugger)
 
 enable_testing()
 
 add_test(NAME run_pvmdbg_test COMMAND $<TARGET_FILE:pvmdbg_test>)
 set_tests_properties(run_pvmdbg_test PROPERTIES PASS_REGULAR_EXPRESSION "ALL OK")
+
+# Drives the interactive tool itself, commands on stdin -- see run_session.cmake
+# for why this needs a script rather than a plain COMMAND.
+add_test(NAME run_pvmdbg_session COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/smoke_session.txt
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_session.cmake)
 
 add_test(NAME run_bytecode_listing COMMAND $<TARGET_FILE:pvmsim> ${PVM_EXAMPLE_BYTECODE})
 set_tests_properties(run_bytecode_listing PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
