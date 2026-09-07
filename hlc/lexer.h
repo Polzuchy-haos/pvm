@@ -15,7 +15,7 @@ enum class TokenType {
 	Identifier,
 	IntLiteral,
 	KwInt, KwVoid, KwVolatile, KwConst, KwIf, KwElse, KwWhile, KwDo, KwFor, KwReturn, KwHalt,
-	KwSvc, KwImport, KwExtern, KwFrom, KwSizeof,
+	KwSvc, KwImport, KwExtern, KwFrom, KwSizeof, KwSection,
 	LBrace, RBrace, LParen, RParen, LBracket, RBracket,
 	Semicolon, Comma, At, Question, Colon,
 	Plus, Minus, Star, Slash,

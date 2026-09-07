@@ -35,8 +35,12 @@ public:
 			else if(Check(TokenType::KwConst)){
 				program.consts.push_back(ParseConstDecl());
 			}
+			else if(Check(TokenType::KwSection)){
+				program.sections.push_back(ParseSectionDecl());
+			}
 			else{
-				Fail("expected a global declaration or a function ('int'/'void'/'volatile'/'const'/'extern')");
+				Fail("expected a global declaration or a function "
+							"('int'/'void'/'volatile'/'const'/'extern'/'section')");
 			}
 		}
 
@@ -139,6 +143,24 @@ private:
 		c.value = ParseExpr();
 		Expect(TokenType::Semicolon, "expected ';'");
 		return c;
+	}
+
+	/* "section <name> <expr>;" -- plus a second, comma-separated expression for
+	 * usrsect, whose first value is a base address rather than a size. Which
+	 * names are meaningful (and which of them take two values) is decided by the
+	 * codegen, together with everything else about what the sizes mean. */
+	SectionDecl ParseSectionDecl(){
+		Token kw 	 = Expect(TokenType::KwSection, "expected 'section'");
+		Token name = Expect(TokenType::Identifier, "expected a section name after 'section'");
+
+		SectionDecl s;
+		s.line 	= kw.line;
+		s.name 	= name.text;
+		s.value = ParseExpr();
+		if(Match(TokenType::Comma))
+			s.length = ParseExpr();
+		Expect(TokenType::Semicolon, "expected ';'");
+		return s;
 	}
 
 	FuncDecl ParseFunc(bool isVoid){

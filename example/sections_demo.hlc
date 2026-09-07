@@ -1,0 +1,32 @@
+/*
+ * Объявление секций: размеры памяти целевой ВМ известны компилятору, поэтому
+ * выход за их границы становится ошибкой сборки, а не ошибкой в рантайме
+ * (ERRORCODE_BAD_DADR). Значения ниже описывают именно pvmsim:
+ * periph[8] в simulator/pvmsim.c, RAM и стек — из pvm/pvm.h.
+ *
+ * Объявлять можно меньше, чем есть у ВМ на самом деле (как здесь: 16 слов RAM
+ * из 64, 256 слов стека из 1024) — тогда проверки просто строже.
+ *
+ * Примеры того, что теперь не соберётся, — в example/bounds/.
+ */
+section code    512;        // байт под байткод
+section ram     16;         // слов RAM: адреса 0..15
+section stack   256;        // слов стека данных
+section usrsect 0x4000, 8;  // база и длина секции периферии
+
+volatile int PERIPH_FIRST @ 0x4000;
+volatile int PERIPH_LAST  @ 0x4007;
+
+int total;
+
+void main() {
+    int i;
+
+    total = 0;
+    for (i = 1; i <= 4; i = i + 1)
+        total = total + i;      // 1+2+3+4 = 10
+
+    PERIPH_FIRST = total;
+    PERIPH_LAST  = total * 2;
+    halt;
+}

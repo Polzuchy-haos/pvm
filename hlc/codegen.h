@@ -16,8 +16,13 @@
  * hlc/modulepath.h); the resolved absolute path is what gets emitted as
  * ".import <path>" in the output, so pvmc's own (relative-only) import
  * resolution doesn't need to know anything about -I or lib/.
+ *
+ * `stackSummary`, when given, receives the worst-case stack usage line that also
+ * heads the generated output (see Codegen::AnalyzeStack). A program that provably
+ * overruns its declared stack throws instead.
  */
 std::string Generate(const Program& program, const std::string& fileName,
-											const std::vector<std::string>& includePaths = {});
+											const std::vector<std::string>& includePaths = {},
+											std::string* stackSummary = nullptr);
 
 #endif /* HLC_CODEGEN_H_ */

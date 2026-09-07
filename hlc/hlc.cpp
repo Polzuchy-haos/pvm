@@ -45,10 +45,12 @@ int main(int argc, char** argv){
 	}
 	if(!have_output) output = ReplaceExtension(input);
 
+	std::string stackSummary;
+
 	try{
 		std::vector<Token> tokens = TokenizeFile(input, includePaths);
 		Program program = Parse(tokens, input);
-		std::string pvms = Generate(program, input, includePaths);
+		std::string pvms = Generate(program, input, includePaths, &stackSummary);
 
 		std::ofstream out(output);
 		if(!out){
@@ -61,6 +63,9 @@ int main(int argc, char** argv){
 		std::cerr << e.what() << "\n";
 		return 1;
 	}
+
+	if(!stackSummary.empty())
+		std::cout << "pvmcc:" << stackSummary.substr(1); /* drop the '#' that heads the .pvms comment */
 
 	std::cout << "pvmcc: wrote '" << output << "'\n";
 	return 0;

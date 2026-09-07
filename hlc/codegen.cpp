@@ -48,6 +48,11 @@ public:
 		for(const ConstDecl& c : program.consts)
 			RegisterConst(c);
 
+		/* Before any global is placed: section sizes decide what "fits in RAM" and
+		 * which fixed @addresses are legal, and may themselves be built out of the
+		 * constants registered just above. */
+		RegisterSections(program);
+
 		for(const GlobalVarDecl& g : program.globals)
 			RegisterGlobalMeta(g);
 
@@ -96,7 +101,15 @@ public:
 			if(f.isExtern && reachable.count(f.name))
 				asmImports.insert(ResolveModulePath(file_, f.asmFile, ".pvms", includePaths_));
 
+		stackSummary_ = AnalyzeStack(reachable);
+
+		out_ << stackSummary_;
 		out_ << ".entry main\n\n";
+
+		/* Passed on rather than kept private, so the same limits also apply to the
+		 * generated code itself (jump targets, program size) and to any hand-written
+		 * .pvms pulled in below -- that check lives in the assembler. */
+		if(!sectionText_.empty()) out_ << sectionText_ << "\n";
 
 		for(const std::string& asmPath : asmImports)
 			out_ << ".import " << asmPath << "\n";
@@ -114,6 +127,10 @@ public:
 		return out_.str();
 	}
 
+	/* Same text as the comment at the top of the generated .pvms, so pvmcc can
+	 * also say it out loud rather than only writing it into a file. */
+	const std::string& StackSummary() const { return stackSummary_; }
+
 private:
 	std::string 													 file_;
 	std::vector<std::string> 							 includePaths_;
@@ -128,6 +145,21 @@ private:
 	int 																	 nextRamAddr_ = 0;
 	int 																	 labelCounter_ = 0;
 
+	/* Section sizes default to the pvm.h this compiler was built against; a
+	 * "section" declaration overrides one for a target configured differently.
+	 * usrsect's length is the exception with no pvm.h constant behind it (the VM
+	 * is told at runtime, by PVM_UsrSect), so it stays unbounded until declared --
+	 * the same rule the assembler applies to its own .usrsect directive.
+	 * "code" is the exception with nothing to keep: it constrains the generated
+	 * code rather than any decision made here, so it is only passed through to the
+	 * assembler. */
+	int 																	 ramSize_ 		 = PVM_CFG_RAM_SIZE;
+	int 																	 stackSize_ 	 = PVM_CFG_STACK_SIZE;
+	int 																	 usrsectBase_ = PVM_CFG_USRSECT_BGN;
+	int 																	 usrsectLen_ 	 = -1;
+	std::string 													 sectionText_; /* the .pvms directives to hand on */
+	std::string 													 stackSummary_;
+
 	/* per-function codegen state */
 	std::string currentFuncName_;
 	std::unordered_map<std::string, int> locals_;
@@ -136,8 +168,74 @@ private:
 	bool 	curFuncIsMain_ 			= false;
 	int 	curReturnSlotOffset_ = 0;
 
-	void Line(const std::string& s){ *activeOut_ << "  " << s << "\n"; }
-	void Label(const std::string& name){ *activeOut_ << name << ":\n"; }
+	/* ---- stack depth tracking (see AnalyzeStack) ---- */
+	int curDepth_ = 0;
+	int maxDepth_ = 0;
+	std::unordered_map<std::string, int> labelDepth_; /* per function, cleared by EmitFunction */
+	std::unordered_map<std::string, int> frameMax_; 	/* function -> its own peak depth */
+	/* function -> every (callee, depth at that CALL) pair inside it */
+	std::unordered_map<std::string, std::vector<std::pair<std::string, int>>> callSites_;
+
+	void Line(const std::string& s){
+		*activeOut_ << "  " << s << "\n";
+		TrackStack(s);
+	}
+
+	void Label(const std::string& name){
+		*activeOut_ << name << ":\n";
+
+		/* Code is emitted in source order, but a label is reached by a jump: both
+		 * arms of a ternary leave one value, yet the second is emitted right after
+		 * the first, so counting straight through would double-count it. Picking
+		 * the depth recorded by the jumps here is what keeps the two apart. */
+		auto it = labelDepth_.find(name);
+		if(it != labelDepth_.end()) SetDepth(it->second);
+	}
+
+	void SetDepth(int depth){
+		curDepth_ = depth;
+		if(curDepth_ > maxDepth_) maxDepth_ = curDepth_;
+	}
+
+	void TrackStack(const std::string& text){
+		size_t 		 space 		 = text.find(' ');
+		std::string mnemonic = (space == std::string::npos) ? text : text.substr(0, space);
+
+		SetDepth(curDepth_ + StackDelta(mnemonic));
+
+		if(mnemonic == "JMP" || mnemonic == "JZ" || mnemonic == "JNZ"){
+			std::string target = text.substr(space + 1);
+			auto 				it 		 = labelDepth_.find(target);
+
+			if(it == labelDepth_.end()) 		labelDepth_[target] = curDepth_;
+			else if(curDepth_ > it->second) it->second 					= curDepth_;
+		}
+	}
+
+	/*
+	 * How one emitted instruction changes the stack depth.
+	 *
+	 * CALL is zero because the callee cleans up after itself -- what it needs
+	 * while it runs is accounted for separately, per call site (see StackNeed).
+	 * SVC is zero here and corrected in EmitSvcCall, the only place that knows how
+	 * many arguments the handler pops. LEAVE/RET are zero rather than "drop the
+	 * frame" because an early return emits them mid-function, and the code after
+	 * one runs at the depth it had before, not at zero.
+	 */
+	static int StackDelta(const std::string& mnemonic){
+		if(mnemonic == "PUSH" 	|| mnemonic == "DUP" || mnemonic == "LOAD" ||
+			 mnemonic == "LOADFP" || mnemonic == "ENTER") return +1;
+
+		if(mnemonic == "POP" || mnemonic == "STORE" || mnemonic == "STOREFP" ||
+			 mnemonic == "JZ" 	|| mnemonic == "JNZ" 	 ||
+			 mnemonic == "ADD" 	|| mnemonic == "SUB" 	 || mnemonic == "MUL" || mnemonic == "DIV" ||
+			 mnemonic == "EQ" 	|| mnemonic == "LT" 	 || mnemonic == "AND" || mnemonic == "OR" 	||
+			 mnemonic == "XOR" 	|| mnemonic == "SHL" 	 || mnemonic == "SHR") return -1;
+
+		if(mnemonic == "STOREI") return -2;
+
+		return 0; /* SWAP, NOT, LOADI, JMP, HALT, CALL, SVC, LEAVE, RET */
+	}
 
 	std::set<std::string> ComputeReachable(const std::string& root){
 		std::set<std::string> reachable;
@@ -232,6 +330,145 @@ private:
 		Fail(e->line, "expected a compile-time constant expression");
 	}
 
+	/* ---- sections ---- */
+
+	void RegisterSections(const Program& program){
+		std::set<std::string> seen;
+		std::ostringstream 		directives;
+
+		for(const SectionDecl& s : program.sections){
+			if(!seen.insert(s.name).second)
+				Fail(s.line, "section '" + s.name + "' declared more than once");
+
+			int value = EvalConstExpr(s.value.get());
+			if(value < 0)
+				Fail(s.line, "section '" + s.name + "' cannot be negative");
+
+			if(s.name == "usrsect"){
+				if(!s.length)
+					Fail(s.line, "'section usrsect' needs a base address and a length "
+												"('section usrsect 0x4000, 16;')");
+
+				int length = EvalConstExpr(s.length.get());
+				if(length < 0)
+					Fail(s.line, "section 'usrsect' cannot have a negative length");
+
+				usrsectBase_ = value;
+				usrsectLen_ 	= length;
+				directives << ".usrsect " << value << " " << length << "\n";
+				continue;
+			}
+
+			if(s.length)
+				Fail(s.line, "section '" + s.name + "' takes a single size");
+
+			if(s.name == "code") 	directives << ".code " << value << "\n";
+			else if(s.name == "stack"){
+				if(value < 1)
+					Fail(s.line, "section 'stack' must be at least 1 word");
+				stackSize_ = value;
+				directives << ".stack " << value << "\n";
+			}
+			else if(s.name == "ram"){
+				ramSize_ = value;
+				directives << ".ram " << value << "\n";
+			}
+			else
+				Fail(s.line, "unknown section '" + s.name +
+											"' (expected 'code', 'ram', 'stack' or 'usrsect')");
+		}
+
+		sectionText_ = directives.str();
+	}
+
+	bool IsValidDataAddr(int addr) const {
+		if(addr >= 0 && addr < ramSize_) return true;
+		if(addr >= usrsectBase_ &&
+			 (usrsectLen_ < 0 || addr < usrsectBase_ + usrsectLen_)) return true;
+		return false;
+	}
+
+	std::string DataRangeText() const {
+		std::ostringstream s;
+
+		if(ramSize_ > 0) 	s << "RAM is 0.." << (ramSize_ - 1);
+		else 							s << "RAM is empty";
+
+		s << std::uppercase << std::hex;
+		if(usrsectLen_ < 0)
+			s << ", usrsect is 0x" << usrsectBase_ << " and up";
+		else if(usrsectLen_ == 0)
+			s << ", usrsect is empty";
+		else
+			s << ", usrsect is 0x" << usrsectBase_ << "..0x" << (usrsectBase_ + usrsectLen_ - 1);
+
+		return s.str();
+	}
+
+	/* ---- stack analysis ---- */
+
+	static const int kStackUnbounded = -1;
+
+	/*
+	 * Worst-case stack use of `name` together with everything it can reach, in
+	 * words above the return address its caller pushed.
+	 *
+	 * Each call site contributes its own depth (return slot and arguments already
+	 * pushed), plus the one word CALL pushes for the return address, plus whatever
+	 * the callee needs on top of that. Recursion makes the sum infinite, so a
+	 * cycle is reported rather than unrolled.
+	 */
+	int StackNeed(const std::string& name, std::set<std::string>& onPath,
+								std::unordered_map<std::string, int>& memo){
+		auto cached = memo.find(name);
+		if(cached != memo.end()) return cached->second;
+		if(onPath.count(name)) return kStackUnbounded;
+
+		onPath.insert(name);
+
+		auto frame = frameMax_.find(name);
+		int 	need 	= (frame != frameMax_.end()) ? frame->second : 0; /* extern: no body to measure */
+
+		auto sites = callSites_.find(name);
+		if(sites != callSites_.end()){
+			for(const auto& site : sites->second){
+				int callee = StackNeed(site.first, onPath, memo);
+				if(callee == kStackUnbounded){ need = kStackUnbounded; break; }
+
+				int total = site.second + 1 + callee;
+				if(total > need) need = total;
+			}
+		}
+
+		onPath.erase(name);
+		memo[name] = need;
+		return need;
+	}
+
+	/* main is entered directly rather than called, so nothing was pushed below its
+	 * frame and its own requirement is the whole program's. */
+	std::string AnalyzeStack(const std::set<std::string>& reachable){
+		std::set<std::string> 							 onPath;
+		std::unordered_map<std::string, int> memo;
+		int 																 need = StackNeed("main", onPath, memo);
+
+		if(need == kStackUnbounded)
+			return "# stack: recursion found -- worst-case depth cannot be bounded\n";
+
+		bool haveOpaque = false;
+		for(const std::string& fn : reachable)
+			if(!frameMax_.count(fn)) haveOpaque = true;
+
+		if(need > stackSize_)
+			throw HlcError(file_ + ": error: worst-case stack use is " + std::to_string(need) +
+											" words, which does not fit in the declared stack of " +
+											std::to_string(stackSize_) + " words");
+
+		return "# stack: worst case " + std::to_string(need) + " of " +
+						std::to_string(stackSize_) + " words" +
+						(haveOpaque ? ", not counting hand-written asm functions" : "") + "\n";
+	}
+
 	/* ---- globals ---- */
 
 	/* Validate + record shape (array-ness/size) so EmitArrayRead/EmitVarRead can
@@ -258,18 +495,28 @@ private:
 
 		if(g.hasAddress){
 			info.address = EvalConstExpr(g.addressExpr.get());
+
+			/* A fixed address is the one place the compiler cannot move a global out of
+			 * harm's way, so it is also the only place worth rejecting outright. */
+			if(!IsValidDataAddr(info.address) || !IsValidDataAddr(info.address + info.size - 1))
+				Fail(g.line, "'" + g.name + "' is pinned to an address outside addressable memory (" +
+											DataRangeText() + ")");
 			return;
 		}
 
-		if(nextRamAddr_ + info.size > PVM_CFG_RAM_SIZE)
-			Fail(g.line, "global '" + g.name + "' does not fit in RAM (PVM_CFG_RAM_SIZE=" +
-										std::to_string(PVM_CFG_RAM_SIZE) + ")");
+		if(nextRamAddr_ + info.size > ramSize_)
+			Fail(g.line, "global '" + g.name + "' does not fit in RAM (" +
+										std::to_string(ramSize_) + " words)");
 		info.address = nextRamAddr_;
 		nextRamAddr_ += info.size;
 	}
 
+	/* ".var" rather than ".const": it resolves identically in operands, but also
+	 * tells the assembler the variable's extent, which lands in the listing's
+	 * memory map and gets the whole span bounds-checked. */
 	void EmitGlobalConst(const GlobalVarDecl& g){
-		out_ << ".const " << g.name << " " << globals_[g.name].address << "\n";
+		const GlobalInfo& info = globals_[g.name];
+		out_ << ".var " << g.name << " " << info.address << " " << info.size << "\n";
 	}
 
 	void EmitGlobalInitializers(const Program& program){
@@ -305,6 +552,13 @@ private:
 		curFuncIsMain_ 			= (f.name == "main");
 		curReturnSlotOffset_ = -(3 + (int)f.params.size());
 
+		/* Depth is counted from the function's own base -- the word just above the
+		 * return address its caller pushed -- so every function starts at zero and
+		 * StackNeed can add the frames up along a call chain. */
+		curDepth_ = 0;
+		maxDepth_ = 0;
+		labelDepth_.clear();
+
 		int n = (int)f.params.size();
 		for(int i = 0; i < n; i++){
 			if(locals_.count(f.params[i].name))
@@ -323,6 +577,8 @@ private:
 		Line("LEAVE");
 		Line(curFuncIsMain_ ? "HALT" : "RET");
 		*activeOut_ << "\n";
+
+		frameMax_[f.name] = maxDepth_;
 	}
 
 	/* ---- statements ---- */
@@ -449,9 +705,16 @@ private:
 	 * it's a runtime contract between the .hlc program and the registered
 	 * PVM_SvcFunc, same as any real syscall ABI. */
 	void EmitSvcCall(SvcCallExpr* x){
+		int base = curDepth_;
+
 		for(const ExprPtr& arg : x->args) EmitExpr(arg.get());
 		EmitExpr(x->number.get());
 		Line("SVC");
+
+		/* The VM pops the call number and the handler pops its own arguments, then
+		 * pushes exactly one result -- a shape only this call site knows, so the
+		 * depth is set here rather than guessed from the mnemonic. */
+		SetDepth(base + 1);
 	}
 
 	/* Deliberately does NOT call RecordGlobalUse: the array's size is known at
@@ -564,6 +827,10 @@ private:
 
 		if(!info.isVoid) Line("PUSH 0"); /* reserve the return slot */
 		for(const ExprPtr& arg : call->args) EmitExpr(arg.get());
+
+		/* Recorded before the CALL, with the return slot and arguments already on
+		 * the stack: that is exactly what the callee's own frame gets stacked on. */
+		callSites_[currentFuncName_].emplace_back(call->name, curDepth_);
 		Line("CALL " + call->name);
 		for(size_t i = 0; i < call->args.size(); i++) Line("POP"); /* drop the stale argument copies */
 		if(!info.isVoid && !wantValue) Line("POP"); /* caller doesn't want the value either */
@@ -638,7 +905,11 @@ private:
 } // namespace
 
 std::string Generate(const Program& program, const std::string& fileName,
-											const std::vector<std::string>& includePaths){
-	Codegen codegen(fileName, includePaths);
-	return codegen.Run(program);
+											const std::vector<std::string>& includePaths,
+											std::string* stackSummary){
+	Codegen 		codegen(fileName, includePaths);
+	std::string pvms = codegen.Run(program);
+
+	if(stackSummary) *stackSummary = codegen.StackSummary();
+	return pvms;
 }

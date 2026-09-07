@@ -171,9 +171,25 @@ struct ConstDecl {
 	int 				line = 0;
 };
 
+/*
+ * section ram 64;  /  section usrsect 0x4000, 16;
+ *
+ * Declares how much of each section the target VM actually has, so overrunning
+ * one becomes a compile error instead of a runtime ERRORCODE_BAD_DADR. Compiled
+ * away entirely: the sizes drive the compiler's own checks and are passed on to
+ * the assembler as .code/.ram/.stack/.usrsect directives (see hlc/codegen.cpp).
+ */
+struct SectionDecl {
+	std::string name; 	/* "code" | "ram" | "stack" | "usrsect" */
+	ExprPtr 		value; 	/* size in words, or the base address for usrsect */
+	ExprPtr 		length; /* usrsect's length in words; null for every other section */
+	int 				line = 0;
+};
+
 struct Program {
 	std::vector<GlobalVarDecl> globals;
 	std::vector<ConstDecl> 	 consts;
+	std::vector<SectionDecl> 	 sections;
 	std::vector<FuncDecl> 		 funcs;
 };
 

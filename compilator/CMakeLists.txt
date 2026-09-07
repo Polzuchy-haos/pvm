@@ -107,6 +107,9 @@ pvm_compile_hlc_example(time_demo 					${CMAKE_SOURCE_DIR}/example/time_demo.hlc
 pvm_compile_hlc_example(const_demo 				${CMAKE_SOURCE_DIR}/example/const_demo.hlc)
 pvm_compile_hlc_example(sugar_demo 				${CMAKE_SOURCE_DIR}/example/sugar_demo.hlc)
 pvm_compile_hlc_example(more_sugar_demo 		${CMAKE_SOURCE_DIR}/example/more_sugar_demo.hlc)
+pvm_compile_hlc_example(sections_demo 			${CMAKE_SOURCE_DIR}/example/sections_demo.hlc)
+# example/bounds/ намеренно НЕ собирается здесь: эти файлы обязаны падать с
+# ошибкой, их проверяют отдельные тесты в корневом CMakeLists.txt.
 # lib/mathlib.hlc and lib/time.hlc have no main() -- they're modules meant to
 # be "import"-ed (see import_demo.hlc / time_demo.hlc), not compiled
 # standalone. Same for example/fastmath.pvms, pulled in by extern_demo.hlc's
@@ -126,3 +129,4 @@ set(PVM_HLC_TIMEDEMO_BYTECODE 		${time_demo_BYTECODE} 				PARENT_SCOPE)
 set(PVM_HLC_CONSTDEMO_BYTECODE 	${const_demo_BYTECODE} 			PARENT_SCOPE)
 set(PVM_HLC_SUGARDEMO_BYTECODE 	${sugar_demo_BYTECODE} 			PARENT_SCOPE)
 set(PVM_HLC_MORESUGARDEMO_BYTECODE ${more_sugar_demo_BYTECODE} 	PARENT_SCOPE)
+set(PVM_HLC_SECTIONSDEMO_BYTECODE 	${sections_demo_BYTECODE} 		PARENT_SCOPE)

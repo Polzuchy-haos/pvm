@@ -5,7 +5,13 @@
  *   - '#' line comments
  *   - ".import file"  : textually inlines another .pvms file (recursively, cycle-safe)
  *   - ".const NAME V" : named integer constant
+ *   - ".var NAME ADDR SIZE"
+ *                     : named variable -- resolves like .const, but also carries
+ *                       its size into the listing's memory map and gets its whole
+ *                       span bounds-checked
  *   - ".entry label"  : moves the block starting at `label` to address 0
+ *   - ".code N" / ".ram N" / ".stack N" / ".usrsect BASE LEN"
+ *                     : declare the target VM's section sizes (see Sections below)
  *   - "name:"         : label starting a new code block
  *   - "MNEMONIC [operand]" : one instruction (operand is a number, .const name or label)
  */
@@ -19,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 
@@ -47,8 +54,59 @@ struct Block {
 	int 							address = 0;
 };
 
+/* A ".var" -- a named data address with a known extent, as opposed to a ".const",
+ * which is just a number that may or may not be an address at all. */
+struct Var {
+	std::string name;
+	int 				address;
+	int 				size; 	/* in words */
+	std::string file;
+	int 				lineNo;
+};
+
+/* A data address travels through the VM as a PVM_Word_t (int16_t), so no
+ * section may reach past what that can express. */
+const int kMaxDataAddr = 32767;
+/* PVM_State_s::code_len is a uint16_t, so the VM cannot address a longer program
+ * regardless of how much storage the target actually has. */
+const int kMaxCodeSize = 65535;
+
+/*
+ * The target VM's memory layout, declared by the .code/.ram/.stack/.usrsect
+ * directives. Its whole purpose is to turn what would otherwise be a runtime
+ * ERRORCODE_BAD_DADR/ERRORCODE_BAD_IADR into an assembly-time error.
+ *
+ * The defaults mirror pvm.h, so a file that declares nothing keeps assembling
+ * exactly as it did before these directives existed. The one deliberate gap is
+ * usrsect's length: pvm.h has no constant for it (the VM learns it at runtime,
+ * from PVM_UsrSect), so until a file says otherwise every address at or above
+ * the usrsect base is accepted -- checking that region requires opting in via
+ * ".usrsect BASE LEN".
+ */
+struct Sections {
+	int codeMax 		= kMaxCodeSize;
+	int ram 				= PVM_CFG_RAM_SIZE; 		/* words; valid data addresses are 0..ram-1 */
+	int stack 			= PVM_CFG_STACK_SIZE; 	/* words */
+	int usrsectBase = PVM_CFG_USRSECT_BGN;
+	int usrsectLen 	= -1; 									/* words; -1 == undeclared, so the upper bound is unknown */
+};
+
 std::string Where(const std::string& file, int lineNo){
 	return file + ":" + std::to_string(lineNo) + ": error: ";
+}
+
+std::string Hex(int value){
+	std::ostringstream s;
+	s << "0x" << std::uppercase << std::hex << value;
+	return s.str();
+}
+
+/* Same shape the listing already uses for code addresses, so a map entry and a
+ * listing line can be matched up by eye. */
+std::string Hex4(int value){
+	std::ostringstream s;
+	s << "0x" << std::uppercase << std::hex << std::setw(4) << std::setfill('0') << value;
+	return s.str();
 }
 
 void Trim(std::string& s){
@@ -101,8 +159,10 @@ public:
 	AssembleResult Run(const std::string& inputPath){
 		LoadFile(inputPath);
 		Parse();
+		ValidateSections();
 		ReorderForEntry();
 		AssignAddresses();
+		CheckCodeSize();
 
 		AssembleResult result;
 		result.code 		= Encode();
@@ -118,6 +178,12 @@ private:
 	std::string 												entryLabel_;
 	bool 																haveEntry_ = false;
 	int 																totalLen_ 	= 0;
+	Sections 														sec_;
+	/* Which sections were declared explicitly, so a redeclaration that contradicts
+	 * an earlier one (typically via .import) is an error rather than a silent
+	 * last-one-wins -- repeating the same value is harmless and stays allowed. */
+	std::unordered_map<std::string, int> declaredSections_;
+	std::vector<Var> 										vars_;
 
 	void LoadFile(const std::string& path){
 		fs::path norm 			= fs::absolute(path).lexically_normal();
@@ -170,6 +236,17 @@ private:
 				continue;
 			}
 
+			if(StartsWithDirective(line, ".code") 	|| StartsWithDirective(line, ".ram") ||
+				 StartsWithDirective(line, ".stack") || StartsWithDirective(line, ".usrsect")){
+				ParseSectionDirective(l);
+				continue;
+			}
+
+			if(StartsWithDirective(line, ".var")){
+				ParseVarDirective(l);
+				continue;
+			}
+
 			if(StartsWithDirective(line, ".const")){
 				std::istringstream iss(line.substr(6));
 				std::string name, valtext;
@@ -210,6 +287,189 @@ private:
 			}
 
 			current->instrs.push_back(Instr{def->opcode, def->hasOperand, operand, 0, l.file, l.lineNo});
+		}
+	}
+
+	/* ".var NAME ADDR SIZE" -- a variable rather than a bare number, so the
+	 * listing's memory map can show where it lives and how much room it takes,
+	 * and so its whole span (not just its first word) gets bounds-checked. */
+	void ParseVarDirective(const Line& l){
+		std::istringstream iss(l.text);
+		std::string directive, name, addrText, sizeText;
+		int address, size;
+
+		iss >> directive;
+		if(!(iss >> name >> addrText >> sizeText))
+			throw AssemblerError(Where(l.file, l.lineNo) + "malformed .var directive "
+														"(expected '.var NAME ADDRESS SIZE')");
+		if(!ParseNumber(addrText, &address))
+			throw AssemblerError(Where(l.file, l.lineNo) + "invalid address '" + addrText + "'");
+		if(!ParseNumber(sizeText, &size) || size <= 0)
+			throw AssemblerError(Where(l.file, l.lineNo) + "invalid size '" + sizeText + "'");
+
+		consts_[name] = address; /* resolves in operands exactly like a .const */
+		vars_.push_back(Var{name, address, size, l.file, l.lineNo});
+	}
+
+	/* ".code N" / ".ram N" / ".stack N" / ".usrsect BASE LEN" -- see Sections. */
+	void ParseSectionDirective(const Line& l){
+		std::istringstream iss(l.text);
+		std::string name;
+		iss >> name;
+
+		if(name == ".usrsect"){
+			int base = ReadSectionValue(iss, l, name, "a base address");
+			int len 	= ReadSectionValue(iss, l, name, "a length in words");
+			ExpectEndOfDirective(iss, l, name);
+
+			if(base < 0 || base > kMaxDataAddr)
+				throw AssemblerError(Where(l.file, l.lineNo) + ".usrsect base must be 0.." +
+															std::to_string(kMaxDataAddr));
+			if(len < 0 || base + len - 1 > kMaxDataAddr)
+				throw AssemblerError(Where(l.file, l.lineNo) + ".usrsect ends past the highest addressable "
+															"word (" + std::to_string(kMaxDataAddr) + ")");
+
+			RecordSection(l, ".usrsect base", base, &sec_.usrsectBase);
+			RecordSection(l, ".usrsect length", len, &sec_.usrsectLen);
+			return;
+		}
+
+		int value = ReadSectionValue(iss, l, name, "a size");
+		ExpectEndOfDirective(iss, l, name);
+
+		if(name == ".code"){
+			if(value <= 0 || value > kMaxCodeSize)
+				throw AssemblerError(Where(l.file, l.lineNo) + ".code must be 1.." + std::to_string(kMaxCodeSize) +
+															" bytes (the VM holds a program's length in a uint16_t)");
+			RecordSection(l, name, value, &sec_.codeMax);
+		}
+		else if(name == ".ram"){
+			if(value < 0 || value > kMaxDataAddr + 1)
+				throw AssemblerError(Where(l.file, l.lineNo) + ".ram must be 0.." +
+															std::to_string(kMaxDataAddr + 1) + " words");
+			RecordSection(l, name, value, &sec_.ram);
+		}
+		else{
+			if(value <= 0)
+				throw AssemblerError(Where(l.file, l.lineNo) + ".stack must be at least 1 word");
+			RecordSection(l, name, value, &sec_.stack);
+		}
+	}
+
+	int ReadSectionValue(std::istringstream& iss, const Line& l,
+											 const std::string& name, const char* what) const {
+		std::string text;
+		int value;
+
+		if(!(iss >> text) || !ParseNumber(text, &value))
+			throw AssemblerError(Where(l.file, l.lineNo) + "'" + name + "' expects " + what);
+
+		return value;
+	}
+
+	void ExpectEndOfDirective(std::istringstream& iss, const Line& l, const std::string& name) const {
+		std::string extra;
+		if(iss >> extra)
+			throw AssemblerError(Where(l.file, l.lineNo) + "unexpected '" + extra + "' after '" + name + "'");
+	}
+
+	void RecordSection(const Line& l, const std::string& what, int value, int* slot){
+		auto it = declaredSections_.find(what);
+		if(it != declaredSections_.end() && it->second != value)
+			throw AssemblerError(Where(l.file, l.lineNo) + "conflicting '" + what + "': already declared as " +
+														std::to_string(it->second) + ", now " + std::to_string(value));
+
+		declaredSections_[what] = value;
+		*slot = value;
+	}
+
+	void ValidateSections() const {
+		if(sec_.ram > sec_.usrsectBase)
+			throw AssemblerError("pvmc: error: .ram (" + std::to_string(sec_.ram) +
+														" words) runs into .usrsect, which starts at " +
+														std::to_string(sec_.usrsectBase));
+
+		/* Checked here rather than where .var is parsed: a file may well declare its
+		 * variables before the sections they have to fit in. */
+		for(const Var& v : vars_)
+			if(!IsValidDataAddr(v.address) || !IsValidDataAddr(v.address + v.size - 1))
+				throw AssemblerError(Where(v.file, v.lineNo) + "'" + v.name + "' occupies " +
+															std::to_string(v.size) + " word(s) from " + std::to_string(v.address) +
+															" (" + Hex(v.address) + "), which does not fit (" + DataRangeText() + ")");
+	}
+
+	void CheckCodeSize() const {
+		if(totalLen_ > sec_.codeMax)
+			throw AssemblerError("pvmc: error: program is " + std::to_string(totalLen_) +
+														" bytes, which exceeds the declared .code size of " +
+														std::to_string(sec_.codeMax) + " bytes");
+	}
+
+	bool IsValidDataAddr(int addr) const {
+		if(addr >= 0 && addr < sec_.ram) return true;
+		if(addr >= sec_.usrsectBase &&
+			 (sec_.usrsectLen < 0 || addr < sec_.usrsectBase + sec_.usrsectLen)) return true;
+		return false;
+	}
+
+	std::string DataRangeText() const {
+		std::ostringstream s;
+
+		if(sec_.ram > 0) 	s << "RAM is 0.." << (sec_.ram - 1);
+		else 							s << "RAM is empty";
+
+		if(sec_.usrsectLen < 0)
+			s << ", usrsect is " << Hex(sec_.usrsectBase) << " and up (declare '.usrsect BASE LEN' to bound it)";
+		else if(sec_.usrsectLen == 0)
+			s << ", usrsect is empty";
+		else
+			s << ", usrsect is " << Hex(sec_.usrsectBase) << ".." << Hex(sec_.usrsectBase + sec_.usrsectLen - 1);
+
+		return s.str();
+	}
+
+	/*
+	 * The whole point of the section directives: an address the VM would reject at
+	 * runtime (ERRORCODE_BAD_DADR / ERRORCODE_BAD_IADR) is rejected here instead.
+	 * Only immediate operands can be checked -- LOADI/STOREI take their address off
+	 * the stack, so those stay a runtime-only concern.
+	 */
+	void CheckOperandRange(const Instr& ins, int value) const {
+		/* Operands are encoded as 2 bytes, so anything wider silently lost its high
+		 * bits until now, whatever the instruction. */
+		if(value < -32768 || value > 65535)
+			throw AssemblerError(Where(ins.file, ins.lineNo) + "operand " + std::to_string(value) +
+														" does not fit in the 16-bit operand field");
+
+		switch(ins.opcode){
+		case INSTR_JMP:
+		case INSTR_JZ:
+		case INSTR_JNZ:
+		case INSTR_CALL:
+			if(value < 0 || value >= totalLen_)
+				throw AssemblerError(Where(ins.file, ins.lineNo) + "jump target " + std::to_string(value) +
+															" is outside the program (0.." + std::to_string(totalLen_ - 1) + ")");
+			break;
+
+		case INSTR_LOAD:
+		case INSTR_STORE:
+			if(!IsValidDataAddr(value))
+				throw AssemblerError(Where(ins.file, ins.lineNo) + "data address " + std::to_string(value) +
+															" (" + Hex(value) + ") is out of range (" + DataRangeText() + ")");
+			break;
+
+		case INSTR_LOADFP:
+		case INSTR_STOREFP:
+			/* The frame pointer's position is a runtime property, so only the offset's
+			 * own magnitude can be judged here: one this large cannot land inside the
+			 * stack from any frame at all. */
+			if(value <= -sec_.stack || value >= sec_.stack)
+				throw AssemblerError(Where(ins.file, ins.lineNo) + "frame offset " + std::to_string(value) +
+															" cannot land inside a " + std::to_string(sec_.stack) + "-word stack");
+			break;
+
+		default:
+			break;
 		}
 	}
 
@@ -269,6 +529,8 @@ private:
 					if(!ResolveOperand(ins.operand, &value))
 						throw AssemblerError(Where(ins.file, ins.lineNo) + "undefined symbol '" + ins.operand + "'");
 
+					CheckOperandRange(ins, value);
+
 					code[ins.address + 1] = static_cast<uint8_t>(value & 0xFF);
 					code[ins.address + 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
 				}
@@ -278,8 +540,88 @@ private:
 		return code;
 	}
 
+	/*
+	 * A linker-map-style header for the listing: how much of each section is in
+	 * use, which label each function starts at, and where every .var lives.
+	 * Written as '#' comments so the listing stays readable as .pvms-ish text.
+	 *
+	 * Only functions are listed under "code" -- a label that is the target of a
+	 * CALL, or the program's entry point. Compiler-generated jump targets
+	 * (if_end_7 and friends) would bury them, and they are right there in the
+	 * body of the listing anyway.
+	 */
+	std::string GenerateMemoryMap() const {
+		std::ostringstream out;
+		std::set<std::string> functions;
+
+		if(haveEntry_) functions.insert(entryLabel_);
+		for(const Block& b : blocks_)
+			for(const Instr& ins : b.instrs)
+				if(ins.opcode == INSTR_CALL) functions.insert(ins.operand);
+
+		out << "# ---- memory map ----\n#\n";
+		out << "# code    : " << totalLen_ << " of " << sec_.codeMax << " bytes\n";
+		out << "# ram     : " << RamHighWaterMark() << " of " << sec_.ram << " words\n";
+		out << "# stack   : " << sec_.stack << " words\n";
+		out << "# usrsect : " << Hex(sec_.usrsectBase)
+				<< (sec_.usrsectLen < 0 ? " and up (undeclared length)"
+																: ".." + Hex(sec_.usrsectBase + sec_.usrsectLen - 1) +
+																	" (" + std::to_string(sec_.usrsectLen) + " words)")
+				<< "\n#\n";
+
+		out << "# functions:\n";
+		for(const Block& b : blocks_)
+			if(!b.label.empty() && (functions.count(b.label) || b.address == 0))
+				out << "#   " << Hex4(b.address) << "  " << b.label << "\n";
+
+		if(!vars_.empty()){
+			std::vector<Var> sorted = vars_;
+			std::sort(sorted.begin(), sorted.end(),
+				[](const Var& a, const Var& b){ return a.address < b.address; });
+
+			out << "#\n# variables:\n";
+			for(const Var& v : sorted)
+				out << "#   " << Hex4(v.address) << "  " << std::left << std::setw(20) << std::setfill(' ') << v.name
+						<< std::right << std::setw(4) << v.size << (v.size == 1 ? " word " : " words")
+						<< "  " << (v.address < sec_.ram ? "ram" : "usrsect") << "\n";
+		}
+
+		if(!consts_.empty()){
+			/* consts_ is a hash map and .var names live in it too -- sort by name and
+			 * drop the variables, so the listing is stable and says each thing once. */
+			std::vector<std::pair<std::string, int>> plain;
+			for(const auto& c : consts_){
+				bool isVar = false;
+				for(const Var& v : vars_) if(v.name == c.first){ isVar = true; break; }
+				if(!isVar) plain.emplace_back(c.first, c.second);
+			}
+			std::sort(plain.begin(), plain.end());
+
+			if(!plain.empty()){
+				out << "#\n# constants:\n";
+				for(const auto& c : plain)
+					out << "#   " << std::left << std::setw(20) << std::setfill(' ') << c.first
+							<< std::right << c.second << " (" << Hex(c.second) << ")\n";
+			}
+		}
+
+		out << "\n";
+		return out.str();
+	}
+
+	/* How far into RAM the variables reach, which is what actually limits how much
+	 * room is left -- not their total size, since fixed @addresses can leave gaps. */
+	int RamHighWaterMark() const {
+		int high = 0;
+		for(const Var& v : vars_)
+			if(v.address < sec_.ram && v.address + v.size > high) high = v.address + v.size;
+		return high;
+	}
+
 	std::string GenerateListing(const std::vector<uint8_t>& code) const {
 		std::ostringstream out;
+
+		out << GenerateMemoryMap();
 
 		for(const Block& b : blocks_){
 			if(!b.label.empty())

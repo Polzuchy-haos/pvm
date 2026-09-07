@@ -1,0 +1,14 @@
+// Этот файл обязан НЕ компилироваться — он проверяет диагностику pvmcc
+// для переменных с жёстко заданным адресом
+// (тест reject_hlc_bad_pinned_address, см. CMakeLists.txt в корне).
+//
+// 0x4020 лежит за границей объявленной секции usrsect (0x4000..0x4007).
+section ram     16;
+section usrsect 0x4000, 8;
+
+volatile int OUT_OF_RANGE @ 0x4020;
+
+void main() {
+    OUT_OF_RANGE = 1;
+    halt;
+}

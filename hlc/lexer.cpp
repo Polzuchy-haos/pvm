@@ -28,6 +28,7 @@ const std::unordered_map<std::string, TokenType> kKeywords = {
 	{"extern", 		TokenType::KwExtern},
 	{"from", 			TokenType::KwFrom},
 	{"sizeof", 		TokenType::KwSizeof},
+	{"section", 	TokenType::KwSection},
 };
 
 class Lexer {
