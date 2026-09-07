@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-#define PVM_CFG_STACK_SIZE			(128) //word
+#define PVM_CFG_STACK_SIZE			(1024) //word
 #define PVM_CFG_RAM_SIZE				(64) //word
 #define PVM_CFG_USRSECT_BGN			(0x4000)
 

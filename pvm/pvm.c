@@ -135,11 +135,18 @@ int PVM_ExecTick(PVM_State_s* state){
 		else
 			status = ERRORCODE_PAIR_STACK;
 		break;
+	/* A target is a signed word, so "< code_len" alone lets a negative one through
+	 * (both sides promote to int) and moves PC before the start of the program --
+	 * every jump below checks the lower bound too. */
 	case INSTR_JMP:
-		if(_FetchWord(state->PC + 1) < state->code_len)
-			state->PC = state->code_ptr + _FetchWord(state->PC + 1) - 1;
+	{
+		PVM_Word_t target = _FetchWord(state->PC + 1);
+
+		if(target >= 0 && target < state->code_len)
+			state->PC = state->code_ptr + target - 1;
 		else
 			status = ERRORCODE_BAD_IADR;
+	}
 		break;
 	case INSTR_JZ:
 	case INSTR_JNZ:
@@ -148,8 +155,10 @@ int PVM_ExecTick(PVM_State_s* state){
 									(!*_StackIndexOfTop(state, 0)) :
 									(*_StackIndexOfTop(state, 0));
 			if(flag){
-				if((_FetchWord(state->PC + 1) < state->code_len))
-					state->PC = state->code_ptr + _FetchWord(state->PC + 1) - 1;
+				PVM_Word_t target = _FetchWord(state->PC + 1);
+
+				if(target >= 0 && target < state->code_len)
+					state->PC = state->code_ptr + target - 1;
 				else
 					status = ERRORCODE_BAD_IADR;
 			}
@@ -344,21 +353,32 @@ int PVM_ExecTick(PVM_State_s* state){
 		break;
 
 	case INSTR_CALL:
-		if(_FetchWord(state->PC + 1) < state->code_len){
+	{
+		PVM_Word_t target = _FetchWord(state->PC + 1);
+
+		if(target >= 0 && target < state->code_len){
 			_StackPush(state, (state->PC + 3) - state->code_ptr);
-			state->PC = state->code_ptr + _FetchWord(state->PC + 1) - 1;
+			state->PC = state->code_ptr + target - 1;
 		}
 		else
 			status = ERRORCODE_BAD_IADR;
+	}
 		break;
 	case INSTR_RET:
-		PVM_Word_t data = *_StackIndexOfTop(state, 0);
-		if(data < state->code_len){
-			state->PC = state->code_ptr + data - 1;
-			_StackPop(state, 0);
+		/* The return address comes off the stack, so unlike CALL/JMP this one also
+		 * has to confirm there is something there to read at all. */
+		if(_StackItemsNum(state) >= 1){
+			PVM_Word_t target = *_StackIndexOfTop(state, 0);
+
+			if(target >= 0 && target < state->code_len){
+				state->PC = state->code_ptr + target - 1;
+				_StackPop(state, 0);
+			}
+			else
+				status = ERRORCODE_BAD_IADR;
 		}
 		else
-			status = ERRORCODE_BAD_IADR;
+			status = ERRORCODE_EMPTY_STACK;
 		break;
 	default:
 		break;
@@ -483,7 +503,7 @@ void PVM_PrintInstr(PVM_State_s* state){
 			PVM_Word_t adr_data = _FetchWord(state->PC + 1);
 			PVM_Word_t data = *_StackIndexOfTop(state, 0);
 
-			if(	(adr_data < PVM_CFG_RAM_SIZE) ||
+			if(	(adr_data >= 0 && adr_data < PVM_CFG_RAM_SIZE) ||
 					(state->usrsect_ptr != 0 &&
 					 adr_data >= PVM_CFG_USRSECT_BGN &&
 					 adr_data < PVM_CFG_USRSECT_BGN + state->usrsect_len))
@@ -665,8 +685,11 @@ static PVM_Word_t* _StackIndexOfTop(PVM_State_s* state, int index){
 	return state->SP - index - 1;
 }
 
+/* PVM_Word_t is signed, so the lower bound is a real check and not a formality:
+ * without it a negative address passes "adr < PVM_CFG_RAM_SIZE" and indexes
+ * state->ram from before its start. */
 static int _IsValidDataAddr(PVM_State_s* state, PVM_Word_t adr){
-	return 	(adr < PVM_CFG_RAM_SIZE) ||
+	return 	(adr >= 0 && adr < PVM_CFG_RAM_SIZE) ||
 					(state->usrsect_ptr != 0 &&
 					 adr >= PVM_CFG_USRSECT_BGN &&
 					 adr < PVM_CFG_USRSECT_BGN + state->usrsect_len);
@@ -675,7 +698,7 @@ static int _IsValidDataAddr(PVM_State_s* state, PVM_Word_t adr){
 static int _DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data){
 	int status = ERRORCODE_NO_ERROR;
 
-	if(adr < PVM_CFG_RAM_SIZE)
+	if(adr >= 0 && adr < PVM_CFG_RAM_SIZE)
 		*data = state->ram[adr];
 	else if(state->usrsect_ptr != 0 &&
 					adr >= PVM_CFG_USRSECT_BGN &&
@@ -690,7 +713,7 @@ static int _DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data){
 static int _DataWrite(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t data){
 	int status = ERRORCODE_NO_ERROR;
 
-	if(adr < PVM_CFG_RAM_SIZE)
+	if(adr >= 0 && adr < PVM_CFG_RAM_SIZE)
 		state->ram[adr] = data;
 	else if(state->usrsect_ptr != 0 &&
 					adr >= PVM_CFG_USRSECT_BGN &&
