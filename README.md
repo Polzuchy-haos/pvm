@@ -53,8 +53,11 @@
   [`docs/pvms-language.md`](docs/pvms-language.md) (ассемблер),
   [`docs/hlc-language.md`](docs/hlc-language.md) (высокоуровневый язык),
   [`docs/debugger.md`](docs/debugger.md) (отладчик и его протокол).
-- [`Release/`](Release/) — готовые бинарники инструментов для Windows +
-  [инструкция по использованию](Release/README.md).
+- [`Release/`](Release/) — папка для раздачи: собранные инструменты, ядро ВМ в
+  исходниках, `lib/`, документация и расширение VS Code. Целиком собирается
+  `make`-ом и в git не хранится (кроме своего
+  [README](Release/README.md)) — всё её содержимое и так есть в репозитории,
+  только в исходном виде.
 
 ## Сборка
 

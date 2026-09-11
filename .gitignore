@@ -5,13 +5,15 @@ build/
 *.bin
 .claude/
 
-# Release/ is a deliberately checked-in copy of the built CLI tools (see Release/README.md).
-!Release/
-!Release/*.exe
+# Release/ is assembled entirely by the build -- see the publish targets in the
+# top-level CMakeLists.txt -- so there is nothing in it to commit: binaries,
+# docs, the VM sources, lib/ and the packed extension are all copies of things
+# already in this repository. Its own README is the one exception, being written
+# by hand rather than copied in from somewhere.
+Release/*
+!Release/README.md
 
-# The extension's dev-time "npm install" output. Ignored here but deliberately
-# checked in under Release/vscode-extension/, so that installing the extension
-# does not require Node on the end user's machine -- hence the narrow rule
-# rather than a blanket "node_modules/", which would then need a negation, and
-# git cannot re-include a file whose parent directory is excluded.
+# The extension's dev-time "npm install" output. The copy that ships is placed
+# in Release/vscode-extension/ by the build, so that installing the extension
+# needs no Node on the end user's machine.
 tools/vscode-pvm/node_modules/

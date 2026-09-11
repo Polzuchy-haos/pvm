@@ -19,13 +19,21 @@ endif()
 # working tree clean.
 set(PVM_RELEASE_DIR ${CMAKE_SOURCE_DIR}/Release)
 
+# Hung off the published file rather than off the target's POST_BUILD: a
+# POST_BUILD step only runs when the target relinks, so deleting something out
+# of Release/ would never bring it back. With the copy declared as producing
+# that file, a missing one is simply rebuilt -- which matters now that Release/
+# is not in version control and the build is the only thing that can restore it.
 function(pvm_publish_tool target)
-	add_custom_command(TARGET ${target} POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-						$<TARGET_FILE:${target}>
-						${PVM_RELEASE_DIR}/$<TARGET_FILE_NAME:${target}>
+	set(published ${PVM_RELEASE_DIR}/${target}${CMAKE_EXECUTABLE_SUFFIX})
+
+	add_custom_command(
+		OUTPUT ${published}
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${target}> ${published}
+		DEPENDS ${target}
 		COMMENT "Publishing ${target} to Release/"
 	)
+	add_custom_target(${target}_published ALL DEPENDS ${published})
 endfunction()
 
 # The manuals ship with the tools for the same reason: someone handed only this
@@ -41,6 +49,51 @@ add_custom_target(pvm_publish_docs ALL
 	COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_RELEASE_DIR}/docs
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PVM_DOC_SOURCES} ${PVM_RELEASE_DIR}/docs
 	COMMENT "Publishing docs/ to Release/docs/"
+)
+
+#
+# The rest of what Release/ holds. Everything in that folder except its own
+# README is assembled here, which is what lets it stay out of version control:
+# a folder that is entirely reproducible does not need to be committed, and
+# committing built binaries is how a repository quietly turns into a warehouse.
+#
+#   pvm/              the VM core, to compile straight into a firmware -- the
+#                     one part of this project that ends up on the MCU
+#   lib/              the .hlc standard library pvmcc looks for beside itself
+#   vscode-extension/ the editor extension, its dependencies included so that
+#                     installing it needs no Node (test/ is left behind: it is
+#                     for developing the extension, not for using it)
+#
+add_custom_target(pvm_publish_extras ALL
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_RELEASE_DIR}/pvm
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+					${CMAKE_SOURCE_DIR}/pvm/pvm.c ${CMAKE_SOURCE_DIR}/pvm/pvm.h
+					${CMAKE_SOURCE_DIR}/pvm/pvmdbg.c ${CMAKE_SOURCE_DIR}/pvm/pvmdbg.h
+					${PVM_RELEASE_DIR}/pvm
+
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+					${CMAKE_SOURCE_DIR}/lib ${PVM_RELEASE_DIR}/lib
+
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/src
+					${PVM_RELEASE_DIR}/vscode-extension/src
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/syntaxes
+					${PVM_RELEASE_DIR}/vscode-extension/syntaxes
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/snippets
+					${PVM_RELEASE_DIR}/vscode-extension/snippets
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/node_modules
+					${PVM_RELEASE_DIR}/vscode-extension/node_modules
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/package.json
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/README.md
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/language-configuration-hlc.json
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/language-configuration-pvms.json
+					${PVM_RELEASE_DIR}/vscode-extension
+
+	COMMENT "Assembling the rest of Release/ (pvm, lib, vscode-extension)"
 )
 
 add_subdirectory(pvm)
