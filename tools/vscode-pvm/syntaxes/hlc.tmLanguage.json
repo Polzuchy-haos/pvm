@@ -1,0 +1,66 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "PVM High-Level Language",
+	"scopeName": "source.hlc",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#keywords" },
+		{ "include": "#storage" },
+		{ "include": "#characters" },
+		{ "include": "#numbers" },
+		{ "include": "#functions" },
+		{ "include": "#operators" },
+		{ "include": "#punctuation" }
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{ "name": "comment.line.double-slash.hlc", "match": "//.*$" },
+				{ "name": "comment.block.hlc", "begin": "/\\*", "end": "\\*/" }
+			]
+		},
+		"characters": {
+			"patterns": [
+				{ "name": "constant.character.hlc", "match": "'(\\\\.|[^'\\\\])'" }
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{ "name": "keyword.control.hlc", "match": "\\b(if|else|while|do|for|return|halt)\\b" },
+				{ "name": "keyword.other.import.hlc", "match": "\\b(import|extern|from)\\b" },
+				{ "name": "support.function.builtin.hlc", "match": "\\b(svc|sizeof)\\b" }
+			]
+		},
+		"storage": {
+			"patterns": [
+				{ "name": "storage.type.hlc", "match": "\\b(int|void)\\b" },
+				{ "name": "storage.modifier.hlc", "match": "\\b(volatile|const)\\b" }
+			]
+		},
+		"numbers": {
+			"patterns": [
+				{ "name": "constant.numeric.hex.hlc", "match": "\\b0[xX][0-9a-fA-F]+\\b" },
+				{ "name": "constant.numeric.decimal.hlc", "match": "\\b[0-9]+\\b" }
+			]
+		},
+		"functions": {
+			"patterns": [
+				{ "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", "name": "entity.name.function.hlc" }
+			]
+		},
+		"operators": {
+			"patterns": [
+				{ "name": "keyword.operator.hlc", "match": "(==|!=|<=|>=|&&|\\|\\||<<|>>|[-+*/%&|^~!<>=@?:])" }
+			]
+		},
+		"punctuation": {
+			"patterns": [
+				{ "name": "punctuation.terminator.hlc", "match": ";" },
+				{ "name": "punctuation.separator.hlc", "match": "," },
+				{ "name": "punctuation.section.block.hlc", "match": "[{}]" },
+				{ "name": "punctuation.section.brackets.hlc", "match": "[\\[\\]]" },
+				{ "name": "punctuation.section.parens.hlc", "match": "[()]" }
+			]
+		}
+	}
+}

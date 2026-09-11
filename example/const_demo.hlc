@@ -1,0 +1,31 @@
+// Проверка именованных констант (const int NAME = <константное выражение>;):
+// не занимают RAM, не попадают в .pvms как символ -- каждое использование
+// подставляется числом прямо на месте (см. docs/hlc-language.md).
+
+const int MAX      = 10;
+const int STEP     = MAX / 5;   // константа может ссылаться на более раннюю -> 2
+const int NEG_STEP = -STEP;     // унарный минус в константном выражении -> -2
+const int LED_ADDR = 0x4000;
+
+volatile int LED @ LED_ADDR;    // адрес MMIO -- тоже константное выражение
+int buffer[MAX];                // размер массива -- тоже константное выражение
+int Base = STEP * 3;            // инициализатор глобальной -- тоже константное выражение (6)
+
+int SumSteps() {
+    int i;
+    int sum;
+    i = 0;
+    sum = Base;              // 6
+    while (i < MAX) {        // MAX используется как обычная константа в условии
+        sum = sum + STEP;    // 10 раз по 2 -> +20
+        i = i + 1;
+    }
+    sum = sum + NEG_STEP;    // -2
+    return sum;              // 6 + 20 - 2 = 24
+}
+
+void main() {
+    LED = MAX;
+    buffer[0] = LED_ADDR;
+    svc(1, SumSteps());      // ожидаем "SVC print -> 24"
+}

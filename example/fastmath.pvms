@@ -1,0 +1,15 @@
+# Ручная ассемблерная реализация fastmul(a, b) = a * b, подключаемая из
+# example/extern_demo.hlc через "extern int fastmul(int a, int b) from fastmath;".
+# Конвенция вызова (ENTER/LOADFP/STOREFP/зарезервированный слот результата)
+# в точности такая же, какую генерирует pvmcc — см. docs/pvms-language.md и
+# docs/hlc-language.md ("extern"). Своего .entry/main здесь нет — это
+# библиотечный фрагмент, подключаемый через .import, а не отдельная программа.
+
+fastmul:
+  ENTER
+  LOADFP -4   # a (первый из двух аргументов)
+  LOADFP -3   # b (второй, ближе к вершине)
+  MUL
+  STOREFP -5  # результат -> зарезервированный слот (2 аргумента: -(3+2))
+  LEAVE
+  RET

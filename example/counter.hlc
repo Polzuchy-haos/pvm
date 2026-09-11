@@ -1,0 +1,15 @@
+// Аналог example/bytecode_listing.pvms: периферийный регистр (MMIO через
+// "@адрес") и цикл со счётчиком.
+
+volatile int REG_EX @ 0x4000;
+
+void increment() {
+    REG_EX = REG_EX + 1;
+}
+
+void main() {
+    REG_EX = 0;
+    while (REG_EX != 10) {
+        increment();
+    }
+}

@@ -1,0 +1,12 @@
+// Этот файл обязан НЕ компилироваться — он проверяет диагностику pvmcc
+// (тест reject_hlc_ram_overflow, см. CMakeLists.txt в корне).
+//
+// Массив на 20 слов не помещается в объявленные 8 слов RAM.
+section ram 8;
+
+int table[20];
+
+void main() {
+    table[0] = 1;
+    halt;
+}

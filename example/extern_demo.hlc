@@ -1,0 +1,12 @@
+// Демонстрация "extern": fastmul() реализован вручную на ассемблере в
+// example/fastmath.pvms, а не сгенерирован pvmcc. Компилятору известна
+// только сигнатура; тело подключается на уровне pvmc через ".import"
+// (эмиттится автоматически, путь к fastmath.pvms резолвится тем же
+// поиском, что и обычный "import").
+extern int fastmul(int a, int b) from fastmath;
+
+int RESULT;
+
+void main() {
+    RESULT = fastmul(6, 7);   // 42
+}

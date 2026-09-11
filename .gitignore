@@ -1,0 +1,20 @@
+build/
+*.o
+*.obj
+*.exe
+*.bin
+.claude/
+
+# Release/ is assembled entirely by the build -- see the publish targets in the
+# top-level CMakeLists.txt -- so there is nothing in it to commit: binaries,
+# docs, the VM sources, lib/ and the packed extension are all copies of things
+# already in this repository. Its own READMEs are the exception, being written
+# by hand rather than copied in from somewhere.
+Release/*
+!Release/README.md
+!Release/README.en.md
+
+# The extension's dev-time "npm install" output. The copy that ships is placed
+# in Release/vscode-extension/ by the build, so that installing the extension
+# needs no Node on the end user's machine.
+tools/vscode-pvm/node_modules/

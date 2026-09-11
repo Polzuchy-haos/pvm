@@ -1,0 +1,24 @@
+#Это коментарий однострочный
+.entry main #метка указывает на вход в программу, перемещает ее на 0 адресс, 
+            #функции выше перемещает ниже
+.import modulefile #Вставляет файл подобно директиве include в C, так же 
+                   #рекусивно раскрывая вложенные import
+.const  REG_EX  0x4000 #пример именновоной константы
+
+func:
+  LOAD REG_EX
+  PUSH 1
+  ADD
+  STORE REG_EX
+  RET
+
+main:
+  PUSH 00
+  STORE REG_EX
+loop:
+  CALL func
+  LOAD REG_EX
+  PUSH 10
+  EQ
+  JZ loop
+  HALT

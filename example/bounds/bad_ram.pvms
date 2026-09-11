@@ -1,0 +1,13 @@
+# Этот файл обязан НЕ собираться — он проверяет диагностику ассемблера
+# (тест reject_pvms_bad_data_address, см. CMakeLists.txt в корне).
+#
+# Адрес 100 не попадает ни в RAM (0..63), ни в usrsect (0x4000..0x4007),
+# поэтому STORE по нему — ошибка сборки, а не ERRORCODE_BAD_DADR в рантайме.
+.ram 64
+.usrsect 0x4000 8
+
+.entry main
+main:
+  PUSH 1
+  STORE 100
+  HALT
