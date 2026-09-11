@@ -11,12 +11,11 @@ if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# Release/ is a checked-in snapshot of the built command-line tools, so that
-# someone can use the toolchain without building it (see Release/README.md).
-# Publishing on every build is what keeps that snapshot honest -- a stale binary
-# sitting next to a fresh one is worse than no snapshot at all. copy_if_different
-# means an unchanged tool is left alone, so builds that changed nothing leave the
-# working tree clean.
+# Release/ is the folder meant to be handed over: the tools, the VM core, the
+# library, the manuals and the editor extension, all in one place. It is
+# assembled here rather than committed, so it cannot fall behind the sources it
+# is made of. copy_if_different leaves an unchanged file alone, so a build that
+# changed nothing leaves the working tree clean.
 set(PVM_RELEASE_DIR ${CMAKE_SOURCE_DIR}/Release)
 
 # Hung off the published file rather than off the target's POST_BUILD: a
@@ -89,6 +88,7 @@ add_custom_target(pvm_publish_extras ALL
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/package.json
 					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/README.md
+					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/README.en.md
 					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/language-configuration-hlc.json
 					${CMAKE_SOURCE_DIR}/tools/vscode-pvm/language-configuration-pvms.json
 					${PVM_RELEASE_DIR}/vscode-extension
