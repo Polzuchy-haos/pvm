@@ -28,6 +28,21 @@ function(pvm_publish_tool target)
 	)
 endfunction()
 
+# The manuals ship with the tools for the same reason: someone handed only this
+# folder should not have to come back to the repository to read how any of it
+# works. Copied on every build so the snapshot cannot quietly fall behind the
+# source it was written against; copy_if_different leaves untouched files alone.
+#
+# Globbed at configure time, so a brand new .md needs a re-run of cmake before it
+# is picked up -- which is what "cmake -S . -B build" already does.
+file(GLOB PVM_DOC_SOURCES ${CMAKE_SOURCE_DIR}/docs/*.md)
+
+add_custom_target(pvm_publish_docs ALL
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_RELEASE_DIR}/docs
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PVM_DOC_SOURCES} ${PVM_RELEASE_DIR}/docs
+	COMMENT "Publishing docs/ to Release/docs/"
+)
+
 add_subdirectory(pvm)
 add_subdirectory(hlc)
 add_subdirectory(compilator)

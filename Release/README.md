@@ -5,13 +5,22 @@
 командой `make` (или `cmake --build build`) из корня проекта — эта папка лишь
 удобный снимок результата, сама сборка живёт в `build/`.
 
-Описание языков — в [`../docs/pvms-language.md`](../docs/pvms-language.md)
-(низкоуровневый ассемблер) и [`../docs/hlc-language.md`](../docs/hlc-language.md)
-(высокоуровневый C-подобный язык).
+Документация лежит здесь же, в [`docs/`](docs/) — папку можно забрать целиком,
+возвращаться в репозиторий за описанием не придётся:
 
-Подсветка синтаксиса `.hlc`/`.pvms` для VS Code — в
-[`vscode-extension/`](vscode-extension/README.md) (устанавливается вручную,
-без Marketplace).
+- [`docs/pvms-language.md`](docs/pvms-language.md) — низкоуровневый ассемблер;
+- [`docs/hlc-language.md`](docs/hlc-language.md) — высокоуровневый C-подобный
+  язык;
+- [`docs/debugger.md`](docs/debugger.md) — отладчик, его протокол и то, что
+  нужно на стороне прошивки.
+
+Она копируется сюда при сборке, так что не расходится с бинарниками рядом.
+Ссылки внутри неё на файлы исходников (`pvm/pvm.c`, `example/…`) относятся к
+репозиторию — сюда попадают только сами тексты.
+
+Расширение VS Code (подсветка синтаксиса и отладка `.hlc` прямо в редакторе) —
+в [`vscode-extension/`](vscode-extension/README.md), устанавливается вручную,
+без Marketplace.
 
 ## Пайплайн
 
@@ -55,7 +64,7 @@ pvmc example.pvms -f carray -o example.c
 pvmc example.pvms -l example.lst           # example.bin + example.lst
 ```
 
-Синтаксис самого языка `.pvms` — в [`../docs/pvms-language.md`](../docs/pvms-language.md).
+Синтаксис самого языка `.pvms` — в [`docs/pvms-language.md`](docs/pvms-language.md).
 
 ## pvmcc — компилятор высокоуровневого языка (`.hlc` → `.pvms`)
 
@@ -78,7 +87,7 @@ pvmcc program.hlc -o out.pvms
 pvmcc program.hlc -I ../common -I ../vendor
 ```
 
-Описание языка — в [`../docs/hlc-language.md`](../docs/hlc-language.md).
+Описание языка — в [`docs/hlc-language.md`](docs/hlc-language.md).
 
 ## pvmdisasm — дизассемблер (байткод → мнемоники)
 
@@ -171,7 +180,7 @@ pvmdbg --port COM3 --map prog.dbgmap    # плюс строки исходник
 Вариант `--port` требует прошивки, в которую вкомпилирован `pvm/pvmdbg.c`
 (отладочный агент) и слой приёма кадров из UART. Файл вместе с `--port` не
 передаётся: у платы программа своя, уже залитая. Подробности протокола и что
-нужно на стороне прошивки — в [`../docs/debugger.md`](../docs/debugger.md).
+нужно на стороне прошивки — в [`docs/debugger.md`](docs/debugger.md).
 
 ## Пример целиком
 
