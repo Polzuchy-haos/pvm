@@ -16,7 +16,8 @@ int Time_GetTick() {
 }
 
 int Time_Elapsed(int old) {
-    return Time_GetTick() - old;
+    int now = Time_GetTick();
+    return (now >= old) ? (now - old) : ((0x7FFF - old) + now);
 }
 
 // Занять выполнение, пока не пройдёт "ticks" отсчётов Time_GetTick() (busy-wait).
