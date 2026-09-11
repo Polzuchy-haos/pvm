@@ -12,7 +12,9 @@
 #include "transport.h"
 
 #include "disasm.h"
+#include "machine.h"
 #include "pvmdbg.h"
+#include "sourcemap.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -69,7 +71,7 @@ static void OnInterrupt(int sig){
  * breakpoint, by ending, or because the user gave up waiting. */
 static void RunUntilStopped(void){
 	g_inRun = 1;
-	g_link->settle(g_link);
+	g_link->settle(g_link, 0); /* no budget: at a terminal, Ctrl+C is the way out */
 	g_inRun = 0;
 
 	if(TakeInterrupt()){
@@ -136,6 +138,21 @@ static void ShowCode(uint16_t addr, int maxLines){
 		printf("  %s %s\n", (i == 0) ? "->" : "  ", lines[i]);
 }
 
+/* The .hlc line the program counter came from, when a debug map says so. Silent
+ * without one, and silent about a source file that is not on this machine --
+ * neither is a fault, just less to show. */
+static void ShowSource(uint16_t pc){
+	int 				line;
+	const char* file = SourceMapFileFor(pc, &line);
+	const char* text;
+
+	if(!file) return;
+
+	text = SourceMapText(file, line);
+	printf("     %s:%d%s%s\n", SourceMapBaseName(file), line,
+					text ? "  " : "", text ? text : "");
+}
+
 static void ShowState(void){
 	const uint8_t* d;
 	uint16_t 			 cmd;
@@ -149,6 +166,7 @@ static void ShowState(void){
 	/* The instruction about to run, right under the numbers: an address on its
 	 * own means looking it up in a listing every single step. */
 	ShowCode(pc, 1);
+	ShowSource(pc);
 }
 
 static void ShowStack(int count){
@@ -188,7 +206,7 @@ static void ShowHelp(void){
 		"  reset           rewind to the first instruction and stop there\n"
 		"  state, i        where the program counter, stack and frame pointer are\n"
 		"  stack [n]       the top n words of the stack (8 by default)\n"
-		"  break <addr>    set a breakpoint, e.g. 'break 0x10' or 'break 16'\n"
+		"  break <where>   set a breakpoint: 'break 0x10', or 'break blink.hlc:21'\n"
 		"  clear <addr>    remove one\n"
 		"  breaks, b       list the ones that are set\n"
 		"  help, ?         this list\n"
@@ -207,15 +225,53 @@ static int ParseAddr(const char* text, uint16_t* out){
 	return 1;
 }
 
+/* Either a bytecode address, or "file.hlc:12" when a debug map can turn that
+ * into one. The colon tells them apart -- an address never has one. */
+static int ResolveTarget(const char* text, uint16_t* addr){
+	const char* colon = strrchr(text, ':');
+	char 				file[260];
+	size_t 			nameLen;
+	int 				line;
+
+	if(!colon){
+		if(ParseAddr(text, addr)) return 1;
+		printf("  expected an address or a source line, e.g. 'break 0x10' or 'break blink.hlc:21'\n");
+		return 0;
+	}
+
+	nameLen = (size_t)(colon - text);
+	line 		= atoi(colon + 1);
+
+	if(nameLen == 0 || nameLen >= sizeof(file) || line <= 0){
+		printf("  expected 'file.hlc:12'\n");
+		return 0;
+	}
+
+	memcpy(file, text, nameLen);
+	file[nameLen] = '\0';
+
+	if(!SourceMapLoaded()){
+		printf("  no debug map loaded -- pass --map, or give an address instead\n");
+		return 0;
+	}
+	if(!SourceMapAddrFor(file, line, addr)){
+		printf("  no code was generated for %s\n", text);
+		return 0;
+	}
+
+	return 1;
+}
+
 static void BreakpointCmd(uint16_t cmd, const char* arg){
 	const uint8_t* d;
 	uint16_t 			 addr, replyCmd;
 	uint8_t 			 payload[2];
 
-	if(!arg || !ParseAddr(arg, &addr)){
-		printf("  expected an address, e.g. 'break 0x10'\n");
+	if(!arg){
+		printf("  expected an address or a source line, e.g. 'break 0x10' or 'break blink.hlc:21'\n");
 		return;
 	}
+	if(!ResolveTarget(arg, &addr)) return;
 
 	payload[0] = (uint8_t)(addr & 0xFF);
 	payload[1] = (uint8_t)(addr >> 8);
@@ -284,12 +340,50 @@ static int Execute(char* line){
 static void Usage(void){
 	fprintf(stderr,
 		"usage: pvmdbg [program.bin]      debug a program in this process\n"
-		"       pvmdbg --port COM3        debug a board over a serial port\n");
+		"       pvmdbg --port COM3        debug a board over a serial port\n"
+		"       --map <file.dbgmap>       source lines, from pvmc -g\n"
+		"       --machine                 line protocol on stdio, for the VS Code extension\n");
+}
+
+/*
+ * Locally the map is guessed from the program's own name, because it is what
+ * pvmc writes next to the .bin. Over a wire there is nothing to guess from --
+ * the program lives in the board's flash and the host has never seen it -- so
+ * the map has to be named, and it is on whoever names it to pick the one that
+ * matches the firmware actually running.
+ */
+static void LoadMapFor(const char* explicitMap, const char* bytecodePath){
+	char guess[512];
+	const char* dot;
+
+	if(explicitMap){
+		SourceMapLoad(explicitMap);
+		return;
+	}
+
+	if(!bytecodePath) return;
+
+	dot = strrchr(bytecodePath, '.');
+	if(!dot || (size_t)(dot - bytecodePath) + 8 >= sizeof(guess)) return;
+
+	snprintf(guess, sizeof(guess), "%.*s.dbgmap", (int)(dot - bytecodePath), bytecodePath);
+
+	/* Checked before loading so that a missing guess stays quiet: only a map the
+	 * user actually asked for is worth complaining about. */
+	{
+		FILE* probe = fopen(guess, "r");
+		if(!probe) return;
+		fclose(probe);
+	}
+
+	SourceMapLoad(guess);
 }
 
 int main(int argc, char** argv){
-	const char* port = 0;
-	const char* path = 0;
+	const char* port 	 = 0;
+	const char* path 	 = 0;
+	const char* map 	 = 0;
+	int 				machine = 0;
 	char 				line[256];
 
 	for(int i = 1; i < argc; i++){
@@ -297,6 +391,11 @@ int main(int argc, char** argv){
 			if(++i >= argc){ Usage(); return EXIT_FAILURE; }
 			port = argv[i];
 		}
+		else if(!strcmp(argv[i], "--map") || !strcmp(argv[i], "-m")){
+			if(++i >= argc){ Usage(); return EXIT_FAILURE; }
+			map = argv[i];
+		}
+		else if(!strcmp(argv[i], "--machine")){ machine = 1; }
 		else if(argv[i][0] == '-'){ Usage(); return EXIT_FAILURE; }
 		else path = argv[i];
 	}
@@ -309,6 +408,12 @@ int main(int argc, char** argv){
 	g_link = port ? TransportSerialOpen(port)
 								: TransportLocalOpen(path ? path : PVM_DEFAULT_BYTECODE);
 	if(!g_link) return EXIT_FAILURE;
+
+	/* Before anything is printed: from here on stdout carries the protocol, and
+	 * the source map is the caller's business rather than ours. */
+	if(machine) return MachineRun(g_link);
+
+	LoadMapFor(map, port ? 0 : (path ? path : PVM_DEFAULT_BYTECODE));
 
 	/* The agent leaves the VM running, which is right for a board that boots on
 	 * its own but wrong for a session someone opened to look at it: stop first,

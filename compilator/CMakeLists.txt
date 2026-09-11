@@ -45,13 +45,14 @@ function(pvm_compile_example name src)
 	set(hexf 		${PVM_BYTECODE_DIR}/${name}.hex)
 	set(carray 	${PVM_BYTECODE_DIR}/${name}.c)
 	set(disasm 	${PVM_BYTECODE_DIR}/${name}.disasm.txt)
+	set(dbgmap 	${PVM_BYTECODE_DIR}/${name}.dbgmap)
 
 	add_custom_command(
-		OUTPUT ${bin} ${lst}
+		OUTPUT ${bin} ${lst} ${dbgmap}
 		COMMAND ${CMAKE_COMMAND} -E make_directory ${PVM_BYTECODE_DIR}
-		COMMAND $<TARGET_FILE:pvmc> ${src} -o ${bin} -f bin -l ${lst}
+		COMMAND $<TARGET_FILE:pvmc> ${src} -o ${bin} -f bin -l ${lst} -g ${dbgmap}
 		DEPENDS pvmc ${src}
-		COMMENT "Assembling ${name} (bin + listing)"
+		COMMENT "Assembling ${name} (bin + listing + debug map)"
 	)
 	add_custom_command(
 		OUTPUT ${hexf}
@@ -72,7 +73,7 @@ function(pvm_compile_example name src)
 		COMMENT "Disassembling ${name}.bin"
 	)
 
-	add_custom_target(${name}_bytecode ALL DEPENDS ${bin} ${lst} ${hexf} ${carray} ${disasm})
+	add_custom_target(${name}_bytecode ALL DEPENDS ${bin} ${lst} ${dbgmap} ${hexf} ${carray} ${disasm})
 
 	set(${name}_BYTECODE ${bin} PARENT_SCOPE)
 endfunction()

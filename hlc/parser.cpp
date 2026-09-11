@@ -71,6 +71,15 @@ private:
 		return Advance();
 	}
 
+	/* Records where a statement or function came from. The file travels with the
+	 * line because "import" splices another file's tokens into this stream, so
+	 * "line 12" on its own does not identify a place in the source. */
+	template<typename T> T* Mark(T* node, const Token& t){
+		node->line = t.line;
+		node->file = t.file;
+		return node;
+	}
+
 	bool Match(TokenType t){
 		if(Check(t)){ Advance(); return true; }
 		return false;
@@ -172,7 +181,7 @@ private:
 		FuncDecl f;
 		f.isVoid = isVoid;
 		f.name 	 = name.text;
-		f.line 	 = name.line;
+		Mark(&f, name);
 
 		Expect(TokenType::LParen, "expected '(' after function name");
 		if(!Check(TokenType::RParen)){
@@ -201,7 +210,7 @@ private:
 
 		FuncDecl f;
 		f.isExtern = true;
-		f.line = kw.line;
+		Mark(&f, kw);
 
 		if(Check(TokenType::KwVoid)){ f.isVoid = true; Advance(); }
 		else Expect(TokenType::KwInt, "expected 'int' or 'void' after 'extern'");
@@ -230,7 +239,7 @@ private:
 	/* Function body: local declarations (C89-style, must come first), then statements. */
 	std::unique_ptr<BlockStmt> ParseFuncBody(){
 		auto block = std::make_unique<BlockStmt>();
-		block->line = Cur().line;
+		Mark(block.get(), Cur());
 
 		Expect(TokenType::LBrace, "expected '{'");
 
@@ -255,7 +264,7 @@ private:
 				Fail("local arrays are not supported in this language version (use a global array)");
 
 			auto decl = std::make_unique<VarDeclStmt>();
-			decl->line = kw.line;
+			Mark(decl.get(), kw);
 			decl->name = name.text;
 			if(Match(TokenType::Assign))
 				decl->init = ParseExpr();
@@ -275,7 +284,7 @@ private:
 		if(Check(TokenType::KwReturn)) return ParseReturn();
 		if(Check(TokenType::KwHalt)){
 			auto h = std::make_unique<HaltStmt>();
-			h->line = Advance().line;
+			Mark(h.get(), Advance());
 			Expect(TokenType::Semicolon, "expected ';'");
 			return h;
 		}
@@ -284,14 +293,14 @@ private:
 
 		if(Check(TokenType::KwSvc)){
 			auto stmt = std::make_unique<ExprStmt>();
-			stmt->line = Cur().line;
+			Mark(stmt.get(), Cur());
 			stmt->expr = ParseSvcCall();
 			Expect(TokenType::Semicolon, "expected ';'");
 			return stmt;
 		}
 
 		auto stmt = std::make_unique<ExprStmt>();
-		stmt->line = Cur().line;
+		Mark(stmt.get(), Cur());
 		stmt->expr = ParseSimpleStmt();
 		Expect(TokenType::Semicolon, "expected ';'");
 		return stmt;
@@ -299,7 +308,7 @@ private:
 
 	StmtPtr ParseBlock(){
 		auto block = std::make_unique<BlockStmt>();
-		block->line = Cur().line;
+		Mark(block.get(), Cur());
 		Expect(TokenType::LBrace, "expected '{'");
 		while(!Check(TokenType::RBrace)) block->stmts.push_back(ParseStatement());
 		Expect(TokenType::RBrace, "expected '}'");
@@ -308,7 +317,7 @@ private:
 
 	StmtPtr ParseIf(){
 		auto s = std::make_unique<IfStmt>();
-		s->line = Advance().line; /* 'if' */
+		Mark(s.get(), Advance()); /* 'if' */
 		Expect(TokenType::LParen, "expected '(' after 'if'");
 		s->cond = ParseExpr();
 		Expect(TokenType::RParen, "expected ')'");
@@ -320,7 +329,7 @@ private:
 
 	StmtPtr ParseWhile(){
 		auto s = std::make_unique<WhileStmt>();
-		s->line = Advance().line; /* 'while' */
+		Mark(s.get(), Advance()); /* 'while' */
 		Expect(TokenType::LParen, "expected '(' after 'while'");
 		s->cond = ParseExpr();
 		Expect(TokenType::RParen, "expected ')'");
@@ -330,7 +339,7 @@ private:
 
 	StmtPtr ParseDoWhile(){
 		auto s = std::make_unique<DoWhileStmt>();
-		s->line = Advance().line; /* 'do' */
+		Mark(s.get(), Advance()); /* 'do' */
 		s->body = ParseStatement();
 		Expect(TokenType::KwWhile, "expected 'while' after 'do' block");
 		Expect(TokenType::LParen, "expected '(' after 'while'");
@@ -342,11 +351,12 @@ private:
 
 	StmtPtr ParseFor(){
 		auto s = std::make_unique<ForStmt>();
-		s->line = Advance().line; /* 'for' */
+		Mark(s.get(), Advance()); /* 'for' */
 		Expect(TokenType::LParen, "expected '(' after 'for'");
 
 		if(!Check(TokenType::Semicolon)){
 			auto stmt = std::make_unique<ExprStmt>();
+			Mark(stmt.get(), Cur());
 			stmt->expr = ParseSimpleStmt();
 			s->init = std::move(stmt);
 		}
@@ -357,6 +367,7 @@ private:
 
 		if(!Check(TokenType::RParen)){
 			auto stmt = std::make_unique<ExprStmt>();
+			Mark(stmt.get(), Cur());
 			stmt->expr = ParseSimpleStmt();
 			s->step = std::move(stmt);
 		}
@@ -368,7 +379,7 @@ private:
 
 	StmtPtr ParseReturn(){
 		auto s = std::make_unique<ReturnStmt>();
-		s->line = Advance().line; /* 'return' */
+		Mark(s.get(), Advance()); /* 'return' */
 		if(!Check(TokenType::Semicolon))
 			s->value = ParseExpr();
 		Expect(TokenType::Semicolon, "expected ';'");

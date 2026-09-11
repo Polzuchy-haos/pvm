@@ -29,6 +29,7 @@ set(expected
 	"stepped"                   # 'step' ran exactly one instruction and said so
 	"no breakpoints set"        # 'breaks' reached the agent and got a real answer
 	"halted -- program finished" # 'run' carried the program to its HALT
+	"square.hlc:"               # the map beside the .bin was found and used
 	"session closed"            # 'exit' ended the session rather than the process dying
 )
 

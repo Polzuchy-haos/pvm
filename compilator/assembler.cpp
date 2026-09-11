@@ -5,6 +5,7 @@
  *   - '#' line comments
  *   - ".import file"  : textually inlines another .pvms file (recursively, cycle-safe)
  *   - ".const NAME V" : named integer constant
+ *   - ".line N path"  : ties the next instruction to a line of .hlc source
  *   - ".var NAME ADDR SIZE"
  *                     : named variable -- resolves like .const, but also carries
  *                       its size into the listing's memory map and gets its whole
@@ -44,8 +45,15 @@ struct Instr {
 	bool 				hasOperand;
 	std::string operand;
 	int 				address = 0;
-	std::string file;
+	std::string file;		/* the .pvms file and line, for diagnostics */
 	int 				lineNo;
+
+	/* Where in the original .hlc source this came from, when a ".line" said so.
+	 * Kept on the instruction rather than tied to an address, so it travels with
+	 * the instruction when .entry reorders the blocks. */
+	bool 				hasDebugLine = false;
+	std::string debugFile;
+	int 				debugLine 	 = 0;
 };
 
 struct Block {
@@ -167,6 +175,7 @@ public:
 		AssembleResult result;
 		result.code 		= Encode();
 		result.listing 	= GenerateListing(result.code);
+		result.debugMap = GenerateDebugMap();
 		return result;
 	}
 
@@ -184,6 +193,9 @@ private:
 	 * last-one-wins -- repeating the same value is harmless and stays allowed. */
 	std::unordered_map<std::string, int> declaredSections_;
 	std::vector<Var> 										vars_;
+	bool 																havePendingDebug_ = false;
+	std::string 												pendingDebugFile_;
+	int 																pendingDebugLine_ = 0;
 
 	void LoadFile(const std::string& path){
 		fs::path norm 			= fs::absolute(path).lexically_normal();
@@ -242,6 +254,11 @@ private:
 				continue;
 			}
 
+			if(StartsWithDirective(line, ".line")){
+				ParseLineDirective(l);
+				continue;
+			}
+
 			if(StartsWithDirective(line, ".var")){
 				ParseVarDirective(l);
 				continue;
@@ -286,8 +303,42 @@ private:
 				current = &blocks_.back();
 			}
 
-			current->instrs.push_back(Instr{def->opcode, def->hasOperand, operand, 0, l.file, l.lineNo});
+			Instr ins{def->opcode, def->hasOperand, operand, 0, l.file, l.lineNo};
+
+			/* Whatever ".line" was last seen belongs to this instruction, and to
+			 * this one only: it is consumed here rather than left standing, so a
+			 * stray directive cannot silently label unrelated code further down. */
+			if(havePendingDebug_){
+				ins.hasDebugLine = true;
+				ins.debugFile 	 = pendingDebugFile_;
+				ins.debugLine 	 = pendingDebugLine_;
+				havePendingDebug_ = false;
+			}
+
+			current->instrs.push_back(std::move(ins));
 		}
+	}
+
+	/*
+	 * ".line N path" -- the path is the rest of the line, unquoted, the same way
+	 * ".import" takes its argument: Windows paths are full of backslashes and can
+	 * contain spaces, and quoting rules would be one more thing to get wrong in a
+	 * file no human writes by hand.
+	 */
+	void ParseLineDirective(const Line& l){
+		std::istringstream iss(l.text);
+		std::string directive, lineText;
+
+		iss >> directive >> lineText;
+		if(!ParseNumber(lineText, &pendingDebugLine_) || pendingDebugLine_ <= 0)
+			throw AssemblerError(Where(l.file, l.lineNo) + "'.line' expects a line number");
+
+		std::getline(iss, pendingDebugFile_);
+		Trim(pendingDebugFile_);
+		if(pendingDebugFile_.empty())
+			throw AssemblerError(Where(l.file, l.lineNo) + "'.line' expects a source file after the number");
+
+		havePendingDebug_ = true;
 	}
 
 	/* ".var NAME ADDR SIZE" -- a variable rather than a bare number, so the
@@ -616,6 +667,23 @@ private:
 		for(const Var& v : vars_)
 			if(v.address < sec_.ram && v.address + v.size > high) high = v.address + v.size;
 		return high;
+	}
+
+	/*
+	 * "0xADDR file:line" per tagged instruction, in address order -- everything a
+	 * debugger needs to turn a program counter back into a place in the source.
+	 * Written after the blocks have been reordered and addressed, so the
+	 * addresses are the ones the program will actually run at.
+	 */
+	std::string GenerateDebugMap() const {
+		std::ostringstream out;
+
+		for(const Block& b : blocks_)
+			for(const Instr& ins : b.instrs)
+				if(ins.hasDebugLine)
+					out << Hex4(ins.address) << " " << ins.debugFile << ":" << ins.debugLine << "\n";
+
+		return out.str();
 	}
 
 	std::string GenerateListing(const std::vector<uint8_t>& code) const {

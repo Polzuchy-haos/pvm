@@ -2,12 +2,13 @@
  * pvmc.cpp
  *
  * Command-line entry point for the PVM assembler:
- *   pvmc <input.pvms> [-o output] [-f bin|hex|carray] [-l [listing.lst]]
+ *   pvmc <input.pvms> [-o output] [-f bin|hex|carray] [-l [listing.lst]] [-g [map.dbgmap]]
  *
  *   -f bin     raw bytecode (default)
  *   -f hex     Intel HEX (for MCU flashing/loading tools)
  *   -f carray  a "const uint8_t name[] = {...};" C source file
  *   -l         also emit a source-correlated listing (address, bytes, mnemonic)
+ *   -g         also emit a debug map (address -> .hlc file and line), for pvmdbg
  */
 #include "assembler.h"
 
@@ -97,7 +98,7 @@ void WriteCArray(const std::string& path, const std::vector<uint8_t>& code, cons
 
 int main(int argc, char** argv){
 	if(argc < 2){
-		std::cerr << "usage: " << argv[0] << " <input.pvms> [-o output] [-f bin|hex|carray] [-l [listing.lst]]\n";
+		std::cerr << "usage: " << argv[0] << " <input.pvms> [-o output] [-f bin|hex|carray] [-l [listing.lst]] [-g [map.dbgmap]]\n";
 		return 1;
 	}
 
@@ -107,6 +108,8 @@ int main(int argc, char** argv){
 	OutputFormat format = OutputFormat::Bin;
 	bool want_listing = false;
 	std::string listing_path;
+	bool want_debugmap = false;
+	std::string debugmap_path;
 
 	for(int i = 2; i < argc; i++){
 		std::string arg = argv[i];
@@ -130,6 +133,11 @@ int main(int argc, char** argv){
 			if(i + 1 < argc && std::string(argv[i + 1]).rfind("-", 0) != 0)
 				listing_path = argv[++i];
 		}
+		else if(arg == "-g"){
+			want_debugmap = true;
+			if(i + 1 < argc && std::string(argv[i + 1]).rfind("-", 0) != 0)
+				debugmap_path = argv[++i];
+		}
 		else{
 			std::cerr << "pvmc: error: unrecognized argument '" << arg << "'\n";
 			return 1;
@@ -142,6 +150,8 @@ int main(int argc, char** argv){
 	}
 	if(want_listing && listing_path.empty())
 		listing_path = ReplaceExtension(output, ".lst");
+	if(want_debugmap && debugmap_path.empty())
+		debugmap_path = ReplaceExtension(output, ".dbgmap");
 
 	AssembleResult result;
 	try{
@@ -159,6 +169,13 @@ int main(int argc, char** argv){
 				throw AssemblerError("pvmc: error: cannot open listing file '" + listing_path + "'");
 			listing << result.listing;
 		}
+
+		if(want_debugmap){
+			std::ofstream map(debugmap_path);
+			if(!map)
+				throw AssemblerError("pvmc: error: cannot open debug map file '" + debugmap_path + "'");
+			map << result.debugMap;
+		}
 	}
 	catch(const std::exception& e){
 		std::cerr << e.what() << "\n";
@@ -168,5 +185,7 @@ int main(int argc, char** argv){
 	std::cout << "pvmc: assembled " << result.code.size() << " bytes of bytecode, wrote '" << output << "'\n";
 	if(want_listing)
 		std::cout << "pvmc: wrote listing to '" << listing_path << "'\n";
+	if(want_debugmap)
+		std::cout << "pvmc: wrote debug map to '" << debugmap_path << "'\n";
 	return 0;
 }

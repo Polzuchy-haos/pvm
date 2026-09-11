@@ -20,10 +20,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* A program with no breakpoints and no HALT would otherwise spin here forever.
- * Ctrl+C also breaks out, as soon as the console delivers it. */
+ * Only applies when the caller gave no time budget: one that did is watching
+ * the clock itself and decides for itself when enough is enough. */
 #define MAX_TICKS_PER_RUN (2000000L)
+
+/* clock() costs far more than an instruction does, so it is consulted rarely. */
+#define TICKS_BETWEEN_CLOCK_CHECKS (1024)
 
 typedef struct{
 	Transport_s base;
@@ -41,30 +46,42 @@ static int LocalExchange(Transport_s* self, uint16_t cmd,
 	return len;
 }
 
-static void LocalSettle(Transport_s* self){
+static int LocalSettle(Transport_s* self, int budgetMs){
 	Local_s* local = (Local_s*)self;
 	char 		 frame[PVMDBG_CFG_BUF_SIZE];
 	long 		 ticks = 0;
+	clock_t 	start = clock();
 
 	while(!TransportInterrupted() && PVMDBG_IsAccessExecTick(&local->dbg)){
 		int status = PVM_ExecTick(&local->vm);
 
 		if(status < 0){
 			/* The protocol gives the device no way to volunteer this, so a board
-			 * would go quiet here instead; in-process the loop can at least say so. */
-			printf("  execution error %d -- the VM refused to run that instruction\n", status);
+			 * would go quiet here instead; in-process the loop can at least say so.
+			 * On stderr, because stdout may be carrying a machine protocol. */
+			fprintf(stderr, "  execution error %d -- the VM refused to run that instruction\n", status);
 			LocalExchange(self, DBGCMD_PAUSE, 0, 0, frame);
-			return;
+			return 1;
 		}
 
-		if(++ticks >= MAX_TICKS_PER_RUN){
-			printf("  %ld ticks without stopping -- pausing, set a breakpoint\n", ticks);
-			LocalExchange(self, DBGCMD_PAUSE, 0, 0, frame);
-			return;
+		ticks++;
+
+		if(budgetMs <= 0){
+			if(ticks >= MAX_TICKS_PER_RUN){
+				fprintf(stderr, "  %ld ticks without stopping -- pausing, set a breakpoint\n", ticks);
+				LocalExchange(self, DBGCMD_PAUSE, 0, 0, frame);
+				return 1;
+			}
+		}
+		else if(ticks % TICKS_BETWEEN_CLOCK_CHECKS == 0 &&
+						(long)((clock() - start) * 1000 / CLOCKS_PER_SEC) >= budgetMs){
+			return 0; /* still going -- the caller wanted the wheel back */
 		}
 	}
+
 	/* Nothing to do for an interrupt here: the session pauses the VM itself, the
 	 * same way it does for a board, so both come to rest identically. */
+	return 1;
 }
 
 static void LocalClose(Transport_s* self){

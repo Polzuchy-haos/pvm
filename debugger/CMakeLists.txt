@@ -5,6 +5,10 @@ add_executable(pvmdbg
 	transport_serial.c
 	disasm.h
 	disasm.cpp
+	sourcemap.h
+	sourcemap.c
+	machine.h
+	machine.c
 )
 
 target_link_libraries(pvmdbg PRIVATE pvmcore pvmenv pvmdisasm_lib)

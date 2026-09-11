@@ -1,0 +1,39 @@
+{
+	// Отладка .hlc прямо в редакторе. Нужен собранный проект (make) — отсюда
+	// берутся .bin и карта отладки .dbgmap — и установленное расширение PVM,
+	// см. Release/vscode-extension/README.md.
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "pvm",
+			"request": "launch",
+			"name": "PVM: blink в ВМ на этой машине",
+			"program": "${workspaceFolder}/build/bytecode/blink.bin",
+			// Карту рядом с .bin расширение находит само; здесь она указана
+			// явно только чтобы было видно, откуда берутся строки исходника.
+			"map": "${workspaceFolder}/build/bytecode/blink.dbgmap",
+			"pvmdbg": "${workspaceFolder}/Release/pvmdbg.exe",
+			"stopOnEntry": true
+		},
+		{
+			"type": "pvm",
+			"request": "launch",
+			"name": "PVM: square в ВМ на этой машине",
+			"program": "${workspaceFolder}/build/bytecode/square.bin",
+			"pvmdbg": "${workspaceFolder}/Release/pvmdbg.exe",
+			"stopOnEntry": true
+		},
+		{
+			"type": "pvm",
+			"request": "launch",
+			"name": "PVM: плата на COM6",
+			// Без program: у платы программа своя, залитая в прошивку. Поэтому
+			// карту здесь угадывать не из чего и указать её обязательно — и она
+			// должна быть от той же сборки, что и прошивка.
+			"port": "COM6",
+			"map": "${workspaceFolder}/build/bytecode/blink.dbgmap",
+			"pvmdbg": "${workspaceFolder}/Release/pvmdbg.exe",
+			"stopOnEntry": true
+		}
+	]
+}

@@ -181,6 +181,22 @@ private:
 		TrackStack(s);
 	}
 
+	/*
+	 * Ties the instructions that follow to the .hlc line they came from, so a
+	 * debugger can work in source rather than in bytecode addresses. Written
+	 * straight out rather than through Line(): it produces no bytecode, so the
+	 * stack tracking must not count it, and it belongs at column zero with the
+	 * other directives.
+	 *
+	 * The file travels with the number because "import" splices another file's
+	 * statements into this one, and a line number alone would then name a place
+	 * in whichever file the reader happened to assume.
+	 */
+	void EmitDebugLine(const std::string& file, int line){
+		if(file.empty() || line <= 0) return;
+		*activeOut_ << ".line " << line << " " << file << "\n";
+	}
+
 	void Label(const std::string& name){
 		*activeOut_ << name << ":\n";
 
@@ -567,6 +583,7 @@ private:
 		}
 
 		Label(f.name);
+		EmitDebugLine(f.file, f.line);
 		Line("ENTER");
 
 		if(curFuncIsMain_) EmitGlobalInitializers(program);
@@ -584,6 +601,8 @@ private:
 	/* ---- statements ---- */
 
 	void EmitStmt(Stmt* s){
+		EmitDebugLine(s->file, s->line);
+
 		if(auto x = dynamic_cast<BlockStmt*>(s)){ for(const StmtPtr& st : x->stmts) EmitStmt(st.get()); return; }
 		if(auto x = dynamic_cast<IfStmt*>(s)){ EmitIf(x); return; }
 		if(auto x = dynamic_cast<WhileStmt*>(s)){ EmitWhile(x); return; }

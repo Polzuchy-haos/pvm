@@ -105,10 +105,11 @@ static int SerialExchange(Transport_s* self, uint16_t cmd,
  * a program taking its time. A run that will not stop on its own is ended with
  * Ctrl+C, which returns to the prompt with the board paused.
  */
-static void SerialSettle(Transport_s* self){
-	char frame[PVMDBG_CFG_BUF_SIZE];
-	int  silence = 0;
-	int  waitMs  = SETTLE_POLL_MIN_MS;
+static int SerialSettle(Transport_s* self, int budgetMs){
+	char 	frame[PVMDBG_CFG_BUF_SIZE];
+	int 	silence = 0;
+	int 	waitMs  = SETTLE_POLL_MIN_MS;
+	DWORD start 	= GetTickCount();
 
 	while(!TransportInterrupted()){
 		const uint8_t* payload;
@@ -119,16 +120,22 @@ static void SerialSettle(Transport_s* self){
 		if(len > 0 && PVMDBG_FrameParse(frame, len, &replyCmd, &payload, &payloadLen) &&
 			 replyCmd == DBGCMD_STATE && payloadLen >= 8){
 			silence = 0;
-			if(payload[6] != DBGMODE_RUNNING) return;
+			if(payload[6] != DBGMODE_RUNNING) return 1;
 		}
 		else if(++silence >= SETTLE_SILENCE_LIMIT){
-			printf("  the board has stopped answering\n");
-			return;
+			/* stderr, because stdout may be carrying a machine protocol */
+			fprintf(stderr, "  the board has stopped answering\n");
+			return 1;
 		}
+
+		if(budgetMs > 0 && Elapsed(start, (DWORD)budgetMs))
+			return 0; /* still going -- the caller wanted the wheel back */
 
 		Sleep((DWORD)waitMs);
 		if(waitMs < SETTLE_POLL_MAX_MS) waitMs *= 2;
 	}
+
+	return 1; /* interrupted: the session pauses the board itself */
 }
 
 static void SerialClose(Transport_s* self){

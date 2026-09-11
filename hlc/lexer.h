@@ -32,6 +32,12 @@ struct Token {
 	std::string text;			/* identifier name, or the raw text for diagnostics */
 	int 				intValue = 0;	/* valid when type == IntLiteral */
 	int 				line = 0;
+	/* Which file this token was read from. Needed because "import" splices another
+	 * file's tokens into this one's stream, so a line number on its own does not
+	 * say where in the source something is. Last on purpose: the lexer builds
+	 * tokens with positional initialisers, and this field is filled in afterwards
+	 * (see Lexer::Run), so putting it anywhere else would silently shift them. */
+	std::string file;
 };
 
 /* Tokenizes already-read source text (no import expansion). */

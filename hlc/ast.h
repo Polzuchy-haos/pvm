@@ -83,7 +83,8 @@ struct SizeofExpr : Expr {
 };
 
 struct Stmt {
-	int line = 0;
+	int 				line = 0;
+	std::string file; /* see Token::file -- a line alone does not locate anything */
 	virtual ~Stmt() = default;
 };
 using StmtPtr = std::unique_ptr<Stmt>;
@@ -144,6 +145,7 @@ struct FuncDecl {
 	bool 									isExtern = false;
 	std::string 					asmFile; /* only meaningful when isExtern */
 	int 									line = 0;
+	std::string 					file;
 };
 
 struct GlobalVarDecl {

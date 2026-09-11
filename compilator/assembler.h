@@ -16,6 +16,9 @@ struct AssembleResult {
 	/* Human-readable "address  hex bytes  MNEMONIC operand" listing, grouped by label,
 	 * using the *original* source operand text (symbol names, not resolved addresses). */
 	std::string 					listing;
+	/* "0xADDR file:line" per instruction that a ".line" directive tied to a place
+	 * in the original .hlc source; empty when the input carried none. */
+	std::string 					debugMap;
 };
 
 /*

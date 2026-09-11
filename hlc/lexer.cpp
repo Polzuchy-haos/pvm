@@ -64,6 +64,11 @@ public:
 			tokens.push_back(LexOperatorOrPunct());
 		}
 
+		/* Stamped in one pass at the end rather than in every Lex* method: the
+		 * whole run comes from one file, and this way adding a token kind cannot
+		 * forget to record where it came from. */
+		for(Token& t : tokens) t.file = file_;
+
 		return tokens;
 	}
 

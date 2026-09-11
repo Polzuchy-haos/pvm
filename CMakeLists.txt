@@ -47,6 +47,26 @@ add_test(NAME run_pvmdbg_session COMMAND ${CMAKE_COMMAND}
 	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/smoke_session.txt
 	-P ${CMAKE_SOURCE_DIR}/debugger/run_session.cmake)
 
+# The same tool in the mode the VS Code extension drives it in.
+add_test(NAME run_pvmdbg_machine COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/machine_session.txt
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_machine.cmake)
+
+# The VS Code extension's adapter, driven with real DAP traffic over a pipe and
+# a real pvmdbg underneath -- no editor involved. Skipped where Node is not
+# installed, since nothing else in this project needs it.
+find_program(PVM_NODE node)
+if(PVM_NODE)
+	add_test(NAME run_vscode_dap_session
+		COMMAND ${PVM_NODE} ${CMAKE_SOURCE_DIR}/tools/vscode-pvm/test/dapSession.test.js
+						$<TARGET_FILE:pvmdbg> ${PVM_HLC_SQUARE_BYTECODE})
+	set_tests_properties(run_vscode_dap_session PROPERTIES PASS_REGULAR_EXPRESSION "ALL OK")
+else()
+	message(STATUS "node not found -- skipping the VS Code adapter test")
+endif()
+
 add_test(NAME run_bytecode_listing COMMAND $<TARGET_FILE:pvmsim> ${PVM_EXAMPLE_BYTECODE})
 set_tests_properties(run_bytecode_listing PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 

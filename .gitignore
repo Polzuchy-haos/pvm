@@ -8,3 +8,10 @@ build/
 # Release/ is a deliberately checked-in copy of the built CLI tools (see Release/README.md).
 !Release/
 !Release/*.exe
+
+# The extension's dev-time "npm install" output. Ignored here but deliberately
+# checked in under Release/vscode-extension/, so that installing the extension
+# does not require Node on the end user's machine -- hence the narrow rule
+# rather than a blanket "node_modules/", which would then need a negation, and
+# git cannot re-include a file whose parent directory is excluded.
+tools/vscode-pvm/node_modules/
