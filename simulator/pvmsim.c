@@ -19,6 +19,8 @@
 #define MAX_STEPS (100000)
 
 PVM_State_s state;
+static PVM_Word_t g_stack[PVM_CFG_STACK_SIZE];
+static PVM_Word_t g_ram[PVM_CFG_RAM_SIZE];
 
 static char* LoadFile(const char* path, int* out_len){
 	FILE* f = fopen(path, "rb");
@@ -51,7 +53,11 @@ int main(int argc, char** argv){
 	if(!code)
 		return EXIT_FAILURE;
 
-	PVM_Init(&state, code, len);
+	if(PVM_Init(&state, code, len, g_stack, PVM_CFG_STACK_SIZE, g_ram, PVM_CFG_RAM_SIZE) != ERRORCODE_NO_ERROR){
+		fprintf(stderr, "pvmsim: cannot set up the VM's stack and RAM\n");
+		free(code);
+		return EXIT_FAILURE;
+	}
 	PVMENV_Attach(&state, "pvmsim");
 
 	for(step = 0; step < MAX_STEPS; step++){

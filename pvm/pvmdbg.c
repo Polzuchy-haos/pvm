@@ -181,6 +181,11 @@ static int _Dispatch(PVMDbg_s* dbg, uint8_t* frame, uint16_t cmd,
     out[7] = dbg->reason;
     return _Reply(frame, cmd, 8);
 
+  case DBGCMD_MEM_INFO:
+    _Put16(out + 0, dbg->state->stack_len);
+    _Put16(out + 2, dbg->state->ram_len);
+    return _Reply(frame, cmd, 4);
+
   case DBGCMD_RUN:
     dbg->mode 	= DBGMODE_RUNNING;
     dbg->reason = DBGSTOP_NONE;

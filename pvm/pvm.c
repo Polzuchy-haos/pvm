@@ -18,9 +18,26 @@ static int					_DataWrite(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t data);
 static PVM_Word_t		_FetchWord(const uint8_t* p);
 
 
-int PVM_Init(PVM_State_s* state, char* code, int len){
+int PVM_Init(PVM_State_s* state, char* code, int len,
+						 PVM_Word_t* stack, int stack_len,
+						 PVM_Word_t* ram, int ram_len){
+	if(stack == 0 || stack_len <= 0 || stack_len > PVM_STACK_LEN_MAX ||
+		 ram_len < 0 || (ram == 0 && ram_len > 0) || ram_len > PVM_CFG_USRSECT_BGN)
+		return ERRORCODE_BAD_CONFIG;
+
 	state->code_ptr = (uint8_t*)code;
 	state->code_len = len;
+
+	state->stack 		 = stack;
+	state->stack_len = (uint16_t)stack_len;
+	state->ram 			 = ram;
+	state->ram_len 	 = (uint16_t)ram_len;
+
+	/* Zeroed here rather than left to the caller: a pool that happens to be a
+	 * static array starts out zero anyway, and one that is not would otherwise
+	 * hand the program whatever the previous user left behind. */
+	for(int i = 0; i < stack_len; i++) stack[i] = 0;
+	for(int i = 0; i < ram_len; i++) 	 ram[i] 	= 0;
 
 	state->PC = state->code_ptr;
 	state->SP = state->stack;
@@ -292,7 +309,7 @@ int PVM_ExecTick(PVM_State_s* state){
 	case INSTR_LEAVE:
 		/* Epilogue: drop this frame's locals and restore the caller's frame pointer,
 		 * leaving the return address CALL pushed back on top for RET. */
-		if(state->FP > state->stack && state->FP <= state->stack + PVM_CFG_STACK_SIZE){
+		if(state->FP > state->stack && state->FP <= state->stack + state->stack_len){
 			PVM_Word_t savedFpIndex;
 
 			state->SP = state->FP;
@@ -309,7 +326,7 @@ int PVM_ExecTick(PVM_State_s* state){
 		PVM_Word_t offset = _FetchWord(state->PC + 1);
 		PVM_Word_t* addr = state->FP + offset;
 
-		if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE){
+		if(addr >= state->stack && addr < state->stack + state->stack_len){
 			status = _StackPush(state, *addr);
 			if(status == ERRORCODE_NO_ERROR) state->PC += 2;
 		}
@@ -323,7 +340,7 @@ int PVM_ExecTick(PVM_State_s* state){
 		PVM_Word_t offset = _FetchWord(state->PC + 1);
 		PVM_Word_t* addr = state->FP + offset;
 
-		if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE){
+		if(addr >= state->stack && addr < state->stack + state->stack_len){
 			PVM_Word_t data;
 			status = _StackPop(state, &data);
 			if(status == ERRORCODE_NO_ERROR){
@@ -503,11 +520,7 @@ void PVM_PrintInstr(PVM_State_s* state){
 			PVM_Word_t adr_data = _FetchWord(state->PC + 1);
 			PVM_Word_t data = *_StackIndexOfTop(state, 0);
 
-			if(	(adr_data >= 0 && adr_data < PVM_CFG_RAM_SIZE) ||
-					(state->usrsect_ptr != 0 &&
-					 adr_data >= PVM_CFG_USRSECT_BGN &&
-					 adr_data < PVM_CFG_USRSECT_BGN + state->usrsect_len))
-			{
+			if(_IsValidDataAddr(state, adr_data)){
 				printf(	"0x%X STORE 0x%X -> %i SP %i - 1\n", adr, adr_data,
 								 data,
 								_StackItemsNum(state));
@@ -597,7 +610,7 @@ void PVM_PrintInstr(PVM_State_s* state){
 			PVM_Word_t offset = _FetchWord(state->PC + 1);
 			PVM_Word_t* addr = state->FP + offset;
 
-			if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE)
+			if(addr >= state->stack && addr < state->stack + state->stack_len)
 				printf(	"0x%X LOADFP %i -> %i SP %i + 1\n", adr, offset, *addr, _StackItemsNum(state));
 			else
 				printf(	"0x%X LOADFP %i -> BadAdr SP %i + 1\n", adr, offset, _StackItemsNum(state));
@@ -608,7 +621,7 @@ void PVM_PrintInstr(PVM_State_s* state){
 			PVM_Word_t offset = _FetchWord(state->PC + 1);
 			PVM_Word_t* addr = state->FP + offset;
 
-			if(addr >= state->stack && addr < state->stack + PVM_CFG_STACK_SIZE)
+			if(addr >= state->stack && addr < state->stack + state->stack_len)
 				printf(	"0x%X STOREFP %i -> %i SP %i - 1\n", adr, offset,
 								*_StackIndexOfTop(state, 0), _StackItemsNum(state));
 			else
@@ -656,7 +669,7 @@ static int _StackItemsNum(PVM_State_s* state){
 static int	_StackPush(PVM_State_s* state, PVM_Word_t value){
 	int status = ERRORCODE_NO_ERROR;
 
-	if(_StackItemsNum(state) < PVM_CFG_STACK_SIZE){
+	if(_StackItemsNum(state) < state->stack_len){
 		*state->SP = value;
 		state->SP += 1;
 	}
@@ -686,10 +699,10 @@ static PVM_Word_t* _StackIndexOfTop(PVM_State_s* state, int index){
 }
 
 /* PVM_Word_t is signed, so the lower bound is a real check and not a formality:
- * without it a negative address passes "adr < PVM_CFG_RAM_SIZE" and indexes
+ * without it a negative address passes "adr < ram_len" and indexes
  * state->ram from before its start. */
 static int _IsValidDataAddr(PVM_State_s* state, PVM_Word_t adr){
-	return 	(adr >= 0 && adr < PVM_CFG_RAM_SIZE) ||
+	return 	(adr >= 0 && adr < state->ram_len) ||
 					(state->usrsect_ptr != 0 &&
 					 adr >= PVM_CFG_USRSECT_BGN &&
 					 adr < PVM_CFG_USRSECT_BGN + state->usrsect_len);
@@ -698,7 +711,7 @@ static int _IsValidDataAddr(PVM_State_s* state, PVM_Word_t adr){
 static int _DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data){
 	int status = ERRORCODE_NO_ERROR;
 
-	if(adr >= 0 && adr < PVM_CFG_RAM_SIZE)
+	if(adr >= 0 && adr < state->ram_len)
 		*data = state->ram[adr];
 	else if(state->usrsect_ptr != 0 &&
 					adr >= PVM_CFG_USRSECT_BGN &&
@@ -713,7 +726,7 @@ static int _DataRead(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data){
 static int _DataWrite(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t data){
 	int status = ERRORCODE_NO_ERROR;
 
-	if(adr >= 0 && adr < PVM_CFG_RAM_SIZE)
+	if(adr >= 0 && adr < state->ram_len)
 		state->ram[adr] = data;
 	else if(state->usrsect_ptr != 0 &&
 					adr >= PVM_CFG_USRSECT_BGN &&

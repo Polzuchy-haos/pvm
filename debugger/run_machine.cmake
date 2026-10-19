@@ -25,6 +25,7 @@ endif()
 set(expected
 	"ok pc=0 sp=0 fp=0"     # a fresh session is stopped on the first instruction
 	"error unknown-command" # a verb it does not know is refused, not ignored
+	"ok stack="             # "mem" got the pool sizes off the agent
 	"running=0"             # "poll" saw the program come to rest
 	"reason=4"              # and it was DBGSTOP_HALTED that stopped it
 )

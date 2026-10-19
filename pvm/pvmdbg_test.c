@@ -31,6 +31,14 @@ static char g_code[] = {
 
 #define BRKP_AT_ADD (6)
 
+/* Deliberately not the PVM_CFG_ defaults, so MEM_INFO is seen reporting the
+ * pools it was actually handed rather than a compile-time constant. */
+#define TEST_STACK_LEN (32)
+#define TEST_RAM_LEN 	 (5)
+
+static PVM_Word_t g_stack[TEST_STACK_LEN];
+static PVM_Word_t g_ram[TEST_RAM_LEN];
+
 static uint16_t ReplyCmd(const char* buf){
   const uint8_t* f = (const uint8_t*)buf;
   return (uint16_t)((uint16_t)f[4] | ((uint16_t)f[5] << 8));
@@ -82,7 +90,12 @@ int main(void){
   uint8_t 		arg[3];
   int 				len;
 
-  PVM_Init(&vm, g_code, (int)sizeof(g_code));
+  CHECK(PVM_Init(&vm, g_code, (int)sizeof(g_code), 0, TEST_STACK_LEN, g_ram, TEST_RAM_LEN)
+          == ERRORCODE_BAD_CONFIG, "PVM_Init refuses a VM with no stack");
+  CHECK(PVM_Init(&vm, g_code, (int)sizeof(g_code), g_stack, TEST_STACK_LEN, 0, TEST_RAM_LEN)
+          == ERRORCODE_BAD_CONFIG, "and a RAM length with no RAM behind it");
+  CHECK(PVM_Init(&vm, g_code, (int)sizeof(g_code), g_stack, TEST_STACK_LEN, g_ram, TEST_RAM_LEN)
+          == ERRORCODE_NO_ERROR, "and accepts a pair of real pools");
   PVMDBG_Init(&dbg, &vm);
 
   /* ---- framing ---- */
@@ -143,6 +156,12 @@ int main(void){
   CHECK(ReplyCmd(buf) == DBGCMD_STATE, "STATE answers with STATE");
   CHECK(ReplyWord(buf, 0) == 3, "STATE reports PC as a code offset");
   CHECK(ReplyWord(buf, 1) == 1, "STATE reports SP as a stack depth");
+
+  len = Exchange(&dbg, buf, DBGCMD_MEM_INFO, 0, 0);
+  CHECK(ReplyCmd(buf) == DBGCMD_MEM_INFO, "MEM_INFO answers with MEM_INFO");
+  CHECK(len == 9 + 4, "with two words of payload");
+  CHECK(ReplyWord(buf, 0) == TEST_STACK_LEN, "the first is the stack pool's size in words");
+  CHECK(ReplyWord(buf, 1) == TEST_RAM_LEN, "the second is the RAM pool's");
 
   Exchange(&dbg, buf, DBGCMD_RESET, 0, 0);
   CHECK(PcOf(&vm) == 0, "RESET rewinds PC to the start");
@@ -213,6 +232,14 @@ int main(void){
 
   Exchange(&dbg, buf, DBGCMD_BRKP_CLR, arg, 2);
   CHECK(ReplyCmd(buf) == DBGCMD_BRKP_CLR, "clearing an address twice is not an error");
+
+  /* ---- the VM keeps to the pool it was given ---- */
+  {
+    int pushed = 0;
+
+    while(PVM_Push(&vm, 1) == ERRORCODE_NO_ERROR && pushed <= TEST_STACK_LEN) pushed++;
+    CHECK(pushed == TEST_STACK_LEN, "the stack overflows at the pool's length, not the default's");
+  }
 
   printf("%d check(s), %d failed\n", g_checks, g_failed);
   if(g_failed == 0) printf("ALL OK\n");

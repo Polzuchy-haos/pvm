@@ -10,9 +10,16 @@
 
 #include <stdint.h>
 
+/* Default pool sizes. The VM itself no longer depends on them -- it works with
+ * whatever pools PVM_Init is handed -- they are what the tools (pvmsim, pvmdbg,
+ * the assembler's .stack/.ram defaults) size their own pools by. */
 #define PVM_CFG_STACK_SIZE			(1024) //word
 #define PVM_CFG_RAM_SIZE				(64) //word
 #define PVM_CFG_USRSECT_BGN			(0x4000)
+
+/* ENTER saves FP as a stack index in a PVM_Word_t slot, so a stack longer than
+ * the largest positive word could not have its frames restored. */
+#define PVM_STACK_LEN_MAX				(0x7FFF)
 
 typedef int16_t	PVM_Word_t;
 
@@ -37,8 +44,14 @@ struct PVM_State_s {
 	const PVM_SvcFunc* svc_table;
 	PVM_Word_t 				 svc_count;
 
-	PVM_Word_t stack[PVM_CFG_STACK_SIZE];
-	PVM_Word_t ram[PVM_CFG_RAM_SIZE];
+	/* Both pools belong to the embedder -- typically static arrays sized for the
+	 * program at hand -- and are only borrowed here, see PVM_Init. Keeping them
+	 * out of the struct is what lets one firmware give a small program a small
+	 * stack without rebuilding the VM, and the debugger read the sizes back. */
+	PVM_Word_t* stack;
+	uint16_t 		stack_len; /* words */
+	PVM_Word_t* ram;
+	uint16_t 		ram_len; 	 /* words; valid data addresses are 0..ram_len-1 */
 };
 
 enum PVM_Instruction_e{
@@ -83,13 +96,31 @@ enum PVM_ExecErrorCode{
 	ERRORCODE_BAD_IADR					=	-4,
 	ERRORCODE_BAD_DADR					=	-5,
 	ERRORCODE_BAD_SVC					=	-6,
+	ERRORCODE_BAD_CONFIG				=	-7, /* PVM_Init was handed pools it cannot use */
 };
 
 enum PVM_ExecStatusCode{
 	PVM_STATUS_HALTED					=	 1,
 };
 
-int PVM_Init(PVM_State_s* state, char* code, int len);
+/*
+ * `stack` and `ram` are pools of `stack_len` and `ram_len` words that the caller
+ * owns and keeps alive for as long as the VM runs, e.g.
+ *
+ *   static PVM_Word_t vm_stack[PVM_CFG_STACK_SIZE];
+ *   static PVM_Word_t vm_ram[PVM_CFG_RAM_SIZE];
+ *
+ *   PVM_Init(&vm, code, len, vm_stack, PVM_CFG_STACK_SIZE, vm_ram, PVM_CFG_RAM_SIZE);
+ *
+ * Both are zeroed here. A program with no globals may pass ram = 0, ram_len = 0.
+ * Returns ERRORCODE_BAD_CONFIG, leaving the state unusable, for a missing or
+ * empty stack, a stack over PVM_STACK_LEN_MAX words, a RAM length without a RAM
+ * pointer, or RAM long enough to run into the user section at
+ * PVM_CFG_USRSECT_BGN.
+ */
+int PVM_Init(PVM_State_s* state, char* code, int len,
+						 PVM_Word_t* stack, int stack_len,
+						 PVM_Word_t* ram, int ram_len);
 int PVM_UsrSect(PVM_State_s* state, PVM_Word_t* ptr, int size);
 int PVM_RegisterSvc(PVM_State_s* state, const PVM_SvcFunc* table, int count);
 int PVM_ExecTick(PVM_State_s* state);

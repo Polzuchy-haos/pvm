@@ -10,6 +10,7 @@
  *   > poll                  < ok running=0          (came to rest)
  *   > stack 4               < ok n=2 v0=3 v1=5
  *   > code 39 8             < ok n=8 b0=26 b1=0 ...
+ *   > mem                   < ok stack=1024 ram=64
  *   > quit                  < ok
  *
  * Anything that goes wrong answers "error <reason>", so the caller never has to
@@ -88,6 +89,22 @@ static void CmdState(void){
 
 	snprintf(tail, sizeof(tail), "pc=%u sp=%u fp=%u mode=%u reason=%u",
 					 Word(d, 0), Word(d, 1), Word(d, 2), d[6], d[7]);
+	Ok(tail);
+}
+
+/* Pool sizes in words, as the device reports them. */
+static void CmdMem(void){
+	const uint8_t* d;
+	uint16_t 			 cmd;
+	char 					 tail[48];
+
+	int 					 len = Reply(Send(DBGCMD_MEM_INFO, 0, 0), &cmd, &d);
+
+	if(len < 0){ Fail("no-answer"); return; }
+	/* An agent built before MEM_INFO existed answers ERROR, with no payload. */
+	if(cmd != DBGCMD_MEM_INFO || len < 4){ Fail("refused"); return; }
+
+	snprintf(tail, sizeof(tail), "stack=%u ram=%u", Word(d, 0), Word(d, 1));
 	Ok(tail);
 }
 
@@ -171,6 +188,7 @@ int MachineRun(Transport_s* link){
 		else if(!strcmp(verb, "clear")) 	 Simple(DBGCMD_BRKP_CLR, 1, a0);
 		else if(!strcmp(verb, "stack")) 	 CmdStack(arg0 ? a0 : PVMDBG_CFG_STACK_READ_MAX);
 		else if(!strcmp(verb, "code")) 	 CmdCode(a0, arg1 ? a1 : PVMDBG_CFG_CODE_READ_MAX);
+		else if(!strcmp(verb, "mem")) 		 CmdMem();
 		else 														 Fail("unknown-command");
 	}
 

@@ -11,7 +11,10 @@ The VM's default configuration (see `pvm/pvm.h`): a 1024-word data stack
 `0..63`), peripherals/usrsect from `0x4000` upwards (`PVM_CFG_USRSECT_BGN`). A
 word is a signed 16-bit value (`PVM_Word_t` = `int16_t`). If the target device
 is configured differently, the sizes are declared in the source itself with the
-`.code`/`.ram`/`.stack`/`.usrsect` directives (below).
+`.code`/`.ram`/`.stack`/`.usrsect` directives (below). The stack and RAM pools
+themselves are allocated by the firmware and handed to `PVM_Init`, so the
+actual sizes on a board are the firmware's to choose; the debugger's `mem`
+command shows them (see `docs/debugger.en.md`).
 
 ## File syntax
 

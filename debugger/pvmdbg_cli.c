@@ -185,6 +185,31 @@ static void ShowStack(int count){
 		printf("  [%d] %-6d%s\n", i, (int)(int16_t)Word(d + 1, i), (i == 0) ? "  <- top" : "");
 }
 
+/* Sizes come from the device, not from PVM_CFG_*: the firmware picks its own
+ * pools, and the defaults this host was built with say nothing about them. An
+ * agent built before MEM_INFO existed answers ERROR, which is said as such. */
+static void ShowMemory(void){
+	const uint8_t* d;
+	uint16_t 			 cmd;
+	uint16_t 			 stackLen, ramLen;
+	int 					 len = Reply(Send(DBGCMD_MEM_INFO, 0, 0), &cmd, &d);
+
+	if(len < 0){ NoAnswer(); return; }
+	if(cmd != DBGCMD_MEM_INFO || len < 4){ printf("  the device does not report its memory sizes\n"); return; }
+
+	stackLen = Word(d, 0);
+	ramLen 	 = Word(d, 1);
+
+	/* How much of the stack is taken is what makes its size worth knowing. */
+	if(Reply(Send(DBGCMD_STATE, 0, 0), &cmd, &d) < 8)
+		printf("  stack  %u words\n", stackLen);
+	else
+		printf("  stack  %u words, %u in use\n", stackLen, Word(d, 1));
+
+	if(ramLen == 0) printf("  ram    none\n");
+	else 						printf("  ram    %u words (addresses 0..%u)\n", ramLen, (unsigned)(ramLen - 1));
+}
+
 static void ShowBreakpoints(void){
 	const uint8_t* d;
 	uint16_t 			 cmd;
@@ -206,6 +231,7 @@ static void ShowHelp(void){
 		"  reset           rewind to the first instruction and stop there\n"
 		"  state, i        where the program counter, stack and frame pointer are\n"
 		"  stack [n]       the top n words of the stack (8 by default)\n"
+		"  mem, m          stack and RAM sizes, and how much of the stack is in use\n"
 		"  break <where>   set a breakpoint: 'break 0x10', or 'break blink.hlc:21'\n"
 		"  clear <addr>    remove one\n"
 		"  breaks, b       list the ones that are set\n"
@@ -297,6 +323,7 @@ static int Execute(char* line){
 	if(!strcmp(verb, "help") || !strcmp(verb, "?")) 				 ShowHelp();
 	else if(!strcmp(verb, "state") || !strcmp(verb, "i")) 	 ShowState();
 	else if(!strcmp(verb, "breaks") || !strcmp(verb, "b"))	 ShowBreakpoints();
+	else if(!strcmp(verb, "mem") || !strcmp(verb, "m")) 		 ShowMemory();
 	else if(!strcmp(verb, "break")) 												 BreakpointCmd(DBGCMD_BRKP_SET, arg);
 	else if(!strcmp(verb, "clear")) 												 BreakpointCmd(DBGCMD_BRKP_CLR, arg);
 	else if(!strcmp(verb, "dis") || !strcmp(verb, "d")){

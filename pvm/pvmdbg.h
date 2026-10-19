@@ -2,7 +2,7 @@
  * int main(){
  *    
  *   ...some code...
- *   PVM_Init();
+ *   PVM_Init(&vm, code, len, stack, stack_len, ram, ram_len);
  *   PVMDBG_Init(); 
  * 
  *   while(1){
@@ -105,6 +105,11 @@ enum PVMDbgCmd_e{
    * actually running rather than trust a local copy that may be out of date --
    * and so a session over a wire needs no copy of the program at all. */
   DBGCMD_READ_CODE = 0x04,
+  /* How big this board's stack and RAM pools are, in words. Asked rather than
+   * assumed because the pools are the firmware's to size (see PVM_Init): without
+   * it the host cannot tell how close SP is to overflowing, or whether the
+   * program it is debugging was even built for this much RAM. */
+  DBGCMD_MEM_INFO  = 0x05,
 
   /* Execution control. All four work the same way: they decide what
    * PVMDBG_IsAccessExecTick answers on the following turns of the main loop,

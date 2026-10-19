@@ -51,6 +51,7 @@ questions in a row is an unplugged cable or a reset, and the tool says so.
 | `reset` | | rewind PC to the start, empty the stack, stay stopped |
 | `state` | `i` | where PC, SP and FP are, and why we stopped |
 | `stack [n]` | | the top `n` words of the stack (8 by default) |
+| `mem` | `m` | stack and RAM sizes as the device reports them, and how much stack is in use |
 | `dis` | `d` | disassemble from the current PC |
 | `break <where>` | | breakpoint: `break 0x12` or `break blink.hlc:21` |
 | `clear <addr>` | | remove one |
@@ -142,6 +143,7 @@ The machine mode is line-based, one command and one reply per line:
 > poll           < ok running=1
 > poll           < ok running=0
 > stack 4        < ok n=2 v0=3 v1=5
+> mem            < ok stack=1024 ram=64
 ```
 
 Deliberately not JSON: only numbers cross this boundary, so `key=value` pairs
@@ -168,7 +170,10 @@ The firmware's main loop looks like this (there is a sketch in
 `pvm/pvmdbg.h` too):
 
 ```c
-PVM_Init(&vm, code, len);
+static PVM_Word_t vm_stack[PVM_CFG_STACK_SIZE];
+static PVM_Word_t vm_ram[PVM_CFG_RAM_SIZE];
+
+PVM_Init(&vm, code, len, vm_stack, PVM_CFG_STACK_SIZE, vm_ram, PVM_CFG_RAM_SIZE);
 PVMDBG_Init(&dbg, &vm);
 
 while(1){
@@ -179,6 +184,15 @@ while(1){
   /* if len > 0, send buf back out */
 }
 ```
+
+The stack and RAM are not part of `PVM_State_s`: they are pools the firmware
+allocates (usually as static arrays of the size it wants) and hands to
+`PVM_Init`; the VM state only keeps pointers to them and their lengths in
+words. That lets one firmware give a small program a small stack without
+rebuilding the VM, and lets the debugger read the actual sizes with `MEM_INFO`
+(`mem` in the tool). `PVM_Init` zeroes both pools and returns
+`ERRORCODE_BAD_CONFIG` if there is no stack, the stack is longer than `0x7FFF`
+words, or RAM runs into the usrsect at `0x4000`.
 
 `PVMDBG_Poll` parses the frame, carries out the command and puts the reply in
 the same buffer (`len` on the way in is how much arrived, on the way out how
@@ -234,6 +248,7 @@ both ends, so two implementations of one format cannot drift apart.
 | `STATE` `0x02` | — | `pc`, `sp`, `fp` (2 bytes each), `mode`, `reason` |
 | `READ_STACK` `0x03` | `count` (1 byte) | `n`, then `n` words, top first |
 | `READ_CODE` `0x04` | address (2 bytes) + `count` (1 byte) | `n`, then `n` bytes of bytecode |
+| `MEM_INFO` `0x05` | — | stack size, RAM size (2 bytes each, in words) |
 | `RUN` `0x10` | — | — |
 | `PAUSE` `0x11` | — | — |
 | `STEP` `0x12` | — | — |
