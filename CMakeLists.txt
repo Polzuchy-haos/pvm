@@ -102,6 +102,7 @@ add_subdirectory(hlc)
 add_subdirectory(compilator)
 add_subdirectory(simulator)
 add_subdirectory(debugger)
+add_subdirectory(pvminit)
 
 enable_testing()
 
@@ -154,6 +155,27 @@ if(PVM_NODE)
 	set_tests_properties(run_vscode_dap_session PROPERTIES PASS_REGULAR_EXPRESSION "ALL OK")
 else()
 	message(STATUS "node not found -- skipping the VS Code adapter test")
+endif()
+
+# pvminit generates a project, and the test builds and runs that project with
+# make -- the only way to find out that what it writes still works. Skipped
+# where make is missing, which is possible on Windows even though everything
+# else here builds.
+find_program(PVM_MAKE NAMES make mingw32-make gmake)
+if(PVM_MAKE)
+	add_test(NAME run_pvminit_generated COMMAND ${CMAKE_COMMAND}
+		-DPVMINIT=$<TARGET_FILE:pvminit>
+		-DMAKE=${PVM_MAKE}
+		-DPVMCC=$<TARGET_FILE:pvmcc>
+		-DPVMC=$<TARGET_FILE:pvmc>
+		-DPVMSIM=$<TARGET_FILE:pvmsim>
+		-DPVMDISASM=$<TARGET_FILE:pvmdisasm>
+		-DTOOLS=${PVM_RELEASE_DIR}
+		-DWORK=${CMAKE_BINARY_DIR}/pvminit_test
+		-P ${CMAKE_SOURCE_DIR}/pvminit/run_generated.cmake)
+	set_tests_properties(run_pvminit_generated PROPERTIES PASS_REGULAR_EXPRESSION "GENERATED PROJECT OK")
+else()
+	message(STATUS "make not found -- skipping the pvminit test")
 endif()
 
 add_test(NAME run_bytecode_listing COMMAND $<TARGET_FILE:pvmsim> ${PVM_EXAMPLE_BYTECODE})
