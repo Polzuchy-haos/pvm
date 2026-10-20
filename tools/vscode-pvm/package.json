@@ -66,6 +66,11 @@
 								"type": "string",
 								"description": "Serial port of a board running the debug agent, e.g. COM3. Without it, the program runs inside pvmdbg on this machine."
 							},
+							"baud": {
+								"type": "number",
+								"description": "Speed of 'port', 8N1. Default 9600, which the board projects use.",
+								"default": 9600
+							},
 							"tcp": {
 								"type": "string",
 								"description": "host:port of a TCP connection to a board -- a bridge to its UART, or pvmboard. Instead of 'port'; like 'port', the board holds its own program."

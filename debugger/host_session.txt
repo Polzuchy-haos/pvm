@@ -4,6 +4,7 @@ step
 step
 run
 exec LOAD 0
+exec PUSH 20; PUSH 22; ADD
 call square 0 9
 call square
 reset

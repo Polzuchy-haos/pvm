@@ -19,8 +19,6 @@
 
 #include <windows.h>
 
-#define BAUD_RATE CBR_115200
-
 typedef struct{
 	StreamTransport_s stream;
 	HANDLE 						handle;
@@ -49,7 +47,7 @@ static void SerialClose(Transport_s* self){
 	free(serial);
 }
 
-Transport_s* TransportSerialOpen(const char* portName){
+Transport_s* TransportSerialOpen(const char* portName, int baud){
 	char 					path[64];
 	Serial_s* 		serial;
 	HANDLE 				handle;
@@ -75,7 +73,7 @@ Transport_s* TransportSerialOpen(const char* portName){
 		return 0;
 	}
 
-	dcb.BaudRate 		 = BAUD_RATE;
+	dcb.BaudRate 		 = (DWORD)baud;
 	dcb.ByteSize 		 = 8;
 	dcb.Parity 			 = NOPARITY;
 	dcb.StopBits 		 = ONESTOPBIT;
@@ -123,15 +121,16 @@ Transport_s* TransportSerialOpen(const char* portName){
 	serial->stream.base.close 	= SerialClose;
 	StreamTransportInit(&serial->stream);
 	snprintf(serial->stream.base.description, sizeof(serial->stream.base.description),
-					 "%s at %d baud", portName, (int)BAUD_RATE);
+					 "%s at %d baud", portName, baud);
 
 	return &serial->stream.base;
 }
 
 #else /* !_WIN32 */
 
-Transport_s* TransportSerialOpen(const char* portName){
+Transport_s* TransportSerialOpen(const char* portName, int baud){
 	(void)portName;
+	(void)baud;
 	fprintf(stderr, "pvmdbg: the serial transport is only implemented for Windows\n");
 	return 0;
 }

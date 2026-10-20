@@ -19,7 +19,8 @@ stream:
 
 ```
 pvmdbg build/bytecode/square.bin        # a VM inside the tool's own process
-pvmdbg --port COM3                      # a board over a serial port, 115200 8N1
+pvmdbg --port COM3                      # a board over a serial port, 9600 8N1
+pvmdbg --port COM3 --baud 115200        # at another speed
 pvmdbg --port COM3 --map blink.dbgmap   # plus source lines, from a debug map
 pvmdbg --host square.bin --port COM3     # program on the host, the board only executes
 pvmdbg --tcp 192.168.1.20:5555           # a board over TCP, through a bridge to its UART
@@ -28,7 +29,11 @@ pvmdbg --tcp 192.168.1.20:5555           # a board over TCP, through a bridge to
 A port and a file together make no sense: a board already holds its own
 program, flashed into it (to run a program the board was never flashed with,
 use `--host`, below). The session opens stopped (the tool sends `PAUSE`
-immediately) and lives until `exit` or `Ctrl+C`.
+immediately) and lives until `exit` or `Ctrl+C`. On the way out the tool sends
+`DETACH`: breakpoints are cleared and the program carries on — from where it
+stood, or, if the session ran a program from the host (`--host`), afresh from
+its start, as after `PVM_Init`. Otherwise the board would sit paused with
+nobody attached.
 
 Commands, output and behaviour are the same for both transports — the whole
 session is written against the protocol and knows nothing about where the VM
@@ -54,15 +59,16 @@ questions in a row is an unplugged cable or a reset, and the tool says so.
 | `reset` | | rewind PC to the start, empty the stack, stay stopped |
 | `state` | `i` | where PC, SP and FP are, and why we stopped |
 | `stack [n]` | | the top `n` words of the stack (8 by default) |
-| `mem` | `m` | stack and RAM sizes as the device reports them, and how much stack is in use |
+| `mem` | `m` | stack, RAM, usrsect and code sizes as the device reports them, and how much stack is in use |
+| `data <addr> [n]` | `x` | `n` words of data memory: RAM from `0`, usrsect from `0x4000` — addresses as in the listing's variables |
 | `dis` | `d` | disassemble from the current PC |
 | `break <where>` | | breakpoint: `break 0x12` or `break blink.hlc:21` |
 | `clear <addr>` | | remove one |
 | `breaks` | `b` | which ones are set |
-| `exec <code>` | | run code on the device without reflashing (see below) |
-| `abort` | | drop a snippet that has not finished, back to the program |
+| `exec <code>` | | with `--host`: run a few instructions on the device (see below) |
+| `call <fn> [words]` | | with `--host`: run a single function (see below) |
 | `help` | `?` | this list |
-| `exit` | `quit`, `q` | end the session |
+| `exit` | `quit`, `q` | end the session; the program carries on |
 
 Addresses come from the memory map in the listing (`pvmc … -l file.lst`, see
 `docs/pvms-language.en.md`), which says where each function begins. Usually you
@@ -78,7 +84,7 @@ every stop, and breakpoints can be set on lines:
   0x000F will stop the program
 (pvmdbg) run
   pc=0x000F  sp=1  fp=1  breakpoint
-  -> 0x000F  0D 00 40   LOAD 0x4000
+  -> 0x000F  0E 00 40   LOAD 0x4000
      blink.hlc:22          LED = LED ^ 1;
 ```
 
@@ -109,7 +115,7 @@ every stop, and breakpoints can be set on lines:
   -> 0x0012  1A         ENTER
      0x0013  1C FD FF   LOADFP -3
      0x0016  1C FD FF   LOADFP -3
-     0x0019  06         MUL
+     0x0019  07         MUL
 ```
 
 The instruction under `PC` is printed by itself after every stop — otherwise
@@ -125,47 +131,6 @@ Peripherals and SVC handlers are the same as `pvmsim`'s (they share
 does in an ordinary run. Locally, a program with no breakpoints and no `HALT`
 will not hang the tool: after two million instructions the session pauses
 itself (on a board, `Ctrl+C` does that job).
-
-### Running code without reflashing
-
-`exec` uploads a small piece of bytecode to the device (up to 64 bytes,
-`PVMDBG_CFG_EXEC_SIZE`) and runs it in the middle of the stopped program:
-
-```
-(pvmdbg) exec PUSH 1234; STORE 0
-  pc=0x0004  sp=2  fp=1  snippet finished, back in the program
-  -> 0x0004  00 07 00   PUSH 7
-     square.hlc:12      RESULT = square(7);
-  snippet left nothing on the stack
-(pvmdbg) exec LOAD 0; PUSH 1; ADD
-  ...
-  snippet left on the stack, top first: 1235
-```
-
-- **Where the code comes from.** A line of instructions separated by `;`
-  (`exec LOAD 3; PUSH 1; ADD`), a `.pvms` file (`exec snippet.pvms`), or a
-  ready `.bin` from `pvmc -f bin`. It is assembled by the same assembler as
-  `pvmc`; an inline line is checked against the RAM and stack the device
-  reports (`mem`), not against the defaults. No `HALT` is needed at the end —
-  the agent fills the buffer after the code with `HALT`s, so a snippet cannot
-  run off its end.
-- **What the snippet sees.** The program's stack, RAM, usrsect and SVCs: read
-  or change a variable, poke a peripheral, try out an expression. Jump
-  addresses inside a snippet count from its start; a snippet cannot `CALL` a
-  function of the program — a jump outside the buffer is refused.
-- **Afterwards.** On the snippet's `HALT` the agent gives the program back its
-  `PC`, `SP` and `FP`, and it carries on as if nothing had happened. What was
-  written to RAM and peripherals stays written. Whatever the snippet left on
-  the stack above the original `SP` is its answer: the agent keeps up to the
-  top 8 words, and the tool prints them. If the snippet popped the program's
-  own values (below the original `SP`), they stay clobbered.
-- **If it does not finish.** An execution error or an endless loop leaves the
-  VM inside the snippet (`[in snippet]` on the state line); from there `step`,
-  `run`, `dis` and `stack` work as they do in the program, and `abort` drops
-  the snippet and returns to the program. `reset` leaves the snippet first,
-  too. Breakpoints do not apply to a snippet, and while one is running they are
-  still set by program address.
-- A snippet can only be started from a stopped program.
 
 ### Over TCP (`--tcp`)
 
@@ -217,6 +182,16 @@ instruction at a time (`EXEC_INSTR`), executes it on its own stack, RAM,
 peripherals and SVCs, and answers with the status — so an execution error is
 seen at once, with its code and address.
 
+All the device keeps for this is 8 bytes in `PVMDbg_s` (`instr`,
+`PVMDBG_CFG_INSTR_SIZE`), filled with `HALT` from the start. For each
+`EXEC_INSTR` the area is filled with `HALT` again, the one instruction is
+written at its start, the VM's `PC` is pointed there and one tick runs. `PC` is
+then left on the `HALT` after the instruction, so a stray `run` stops at once;
+the next instruction starts from the top of the area again. Everything else —
+the stack, RAM, the program's `code_ptr` — stays in the VM's own structure;
+nothing is saved or copied. Meanwhile `STATE` reports `pc = 0xFFFF`, an address
+no program has.
+
 | Instruction | Executed by |
 |---|---|
 | data: `PUSH`, arithmetic, `LOAD`/`STORE`, `ENTER`/`LEAVE`, `LOADFP`/`STOREFP`, `SVC`, … | the device |
@@ -228,8 +203,8 @@ seen at once, with its code and address.
 
 The commands are the same: `step`, `run`, `state`, `dis`,
 `break`/`clear`/`breaks` (breakpoints are now the host's, with no four-slot
-limit), `reset` (`PC` to 0, the device's stack emptied); `stack`, `mem` and
-`exec` still go to the device. Plus `call` — run one function and stop:
+limit), `reset` (`PC` to 0, the device's stack emptied); `stack` and `mem`
+still go to the device. Plus `call` — run one function and stop:
 
 ```
 (pvmdbg) call square 0 9
@@ -246,9 +221,31 @@ started at is printed and popped, and `PC` goes back where it was. Function
 names come from the `pvmc -l` listing next to the `.bin`; without one, give an
 address (`call 0x12 0 9`).
 
-The price: every instruction is one frame exchange. Locally that is
-unnoticeable; over a serial port at 115200 it is a few hundred instructions a
-second — plenty for debugging, not for real work. Machine mode (`--machine`)
+`exec` runs a few instructions in the middle of the program, which stays where
+it was:
+
+```
+(pvmdbg) exec PUSH 1234; STORE 0
+  snippet left nothing on the stack
+(pvmdbg) exec LOAD 0; PUSH 1; ADD
+  snippet left on the stack, top first: 1235
+```
+
+The code is a line of instructions separated by `;`, a `.pvms` file, or a `.bin`
+from `pvmc -f bin`; it is assembled by the same assembler as `pvmc`, and a line
+is checked against the RAM and stack the device reports (`mem`). A snippet runs
+just as the program does: data instructions on the device one at a time, jumps
+on the host, addresses counting from the snippet's start, no `HALT` needed at
+the end. It sees the program's stack, RAM, usrsect and SVCs — read or change a
+variable, poke a peripheral. Whatever it leaves above the stack depth it started
+at is printed and taken off; the program's `PC`, its breakpoints and a `call`
+in progress are left alone. Without `--host`, `exec` is not available: the
+device keeps no code, and with no program on the host there is nowhere to give
+`PC` back to.
+
+The price: every instruction is one or two frame exchanges. Locally that is
+unnoticeable; over a serial port at 9600 it is about 35 instructions a second
+(it was ~300 at 115200) — enough for debugging, not for real work. Machine mode (`--machine`)
 and VS Code do not support this mode yet.
 
 ## In VS Code
@@ -343,60 +340,74 @@ Three things in that logic are not obvious but matter:
 
 By default `PVMDBG_Init` leaves the VM running: a board powered up with nothing
 attached to its debug port has to work. The tool sends `PAUSE` the moment it
-connects.
+connects, and `DETACH` when it leaves. Firmware that can tell for itself that
+the debugger has gone — a closed connection, as in `pvmboard` — calls
+`PVMDBG_Detach`, which does the same.
 
 ## The protocol
 
-The frame, little-endian throughout:
+The frame is fixed — 12 bytes in both directions, little-endian:
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | `sync` = `PVMDBG_SYNC` |
 | 4 | 2 | `cmd` (`PVMDbgCmd_e`) |
-| 6 | 1 | `len` — how many payload bytes follow |
-| 7 | `len` | `data`, command-specific |
-| last 2 | 2 | `crc16` (CCITT) over everything before it |
+| 6 | 4 | `data`, command-specific; unused bytes are zero |
+| 10 | 2 | `crc16` (CCITT) over the 10 bytes before it |
 
-The `len` field is not decoration: it is what makes a frame findable in a
-stream. A port hands over whatever has arrived, and without a length "the frame
-ended here" is indistinguishable from "the rest has not turned up yet". Given
-the bytes accumulated so far, `PVMDBG_FrameLength` answers: the length of a
-complete frame, `0` for "wait for more", or `-1` for "there is rubbish at the
-front, drop a byte and ask again". That is how the stream resynchronises after
-line noise.
+There is no length in the frame: a reader never has to trust a length field
+from a stream that may be corrupt, and one 12-byte buffer is all either end
+needs. Given what has accumulated, `PVMDBG_FrameLength` answers `12` for a whole
+frame, `0` for keep waiting, `-1` for "the front is not `sync`" — drop a byte and
+ask again. That is how the stream resynchronises after noise. The price is that
+what does not fit in 4 bytes is asked for a piece at a time: one stack word,
+one breakpoint slot, 4 bytes of code (on the host, `debugger/dbgclient.c` puts
+the pieces together).
 
 The frame is read and written byte by byte rather than by casting the buffer to
-a `PVMDbgFrame_s*`: the buffer carries no alignment guarantee, and a `uint32`
-read from an odd address on Cortex-M0 is a HardFault (the same reason `pvm.c`
-has `_FetchWord`). Building and parsing frames
+`PVMDbgFrame_s*`: the buffer carries no alignment guarantee, and reading a
+`uint32` from an odd address on Cortex-M0 is a HardFault (the same reason
+`_FetchWord` exists in `pvm.c`). Building and parsing a frame
 (`PVMDBG_FrameBuild`/`PVMDBG_FrameParse`) live in the header and are used by
 both ends, so two implementations of one format cannot drift apart.
 
-| Command | Request data | Reply data |
+16-bit values are little-endian:
+
+| Command | Request `data` | Reply `data` |
 |---|---|---|
 | `PING` `0x01` | — | — |
-| `STATE` `0x02` | — | `pc`, `sp`, `fp` (2 bytes each), `mode`, `reason`, `exec` (1 while the VM is in a snippet, `pc` then being an offset into it) |
-| `READ_STACK` `0x03` | `count` (1 byte) | `n`, then `n` words, top first |
-| `READ_CODE` `0x04` | address (2 bytes) + `count` (1 byte) | `n`, then `n` bytes of bytecode |
-| `MEM_INFO` `0x05` | — | stack size, RAM size (2 bytes each, in words) |
+| `STATE` `0x02` | — | `pc`(2), `mode`(1), `reason`(1); `pc = 0xFFFF` while `PC` is on the `EXEC_INSTR` area |
+| `READ_STACK` `0x03` | index from the top (1) | word(2), stack depth(2); past the bottom — `ERROR` |
+| `READ_CODE` `0x04` | address(2) | 4 bytes of bytecode, `HALT` past the end of the program; an address past the end — `ERROR` |
+| `MEM_INFO` `0x05` | which(1) | `0`: stack and RAM sizes (words); `1`: code length (bytes), usrsect (words) |
+| `REGS` `0x06` | — | `sp`(2), `fp`(2) — stack depths |
+| `READ_DATA` `0x07` | address(2) | word(2): RAM from `0`, usrsect from `0x4000`, as `LOAD` sees them; anything else — `ERROR` |
 | `RUN` `0x10` | — | — |
 | `PAUSE` `0x11` | — | — |
 | `STEP` `0x12` | — | — |
 | `RESET` `0x13` | — | — |
-| `BRKP_SET` `0x20` | address (2 bytes) | — |
-| `BRKP_CLR` `0x21` | address (2 bytes) | — |
-| `BRKP_LIST` `0x22` | — | `n`, then `n` addresses |
-| `EXEC_WRITE` `0x30` | offset (1 byte), then bytecode | — |
-| `EXEC_RUN` `0x31` | length (1 byte) | — |
-| `EXEC_STATUS` `0x32` | — | state (`PVMDbgExec_e`), `n`, then the `n` words the snippet left, top first |
-| `EXEC_ABORT` `0x33` | — | — |
-| `EXEC_INSTR` `0x34` | an instruction (1 or 3 bytes; jumps, `CALL`/`RET`/`HALT` are refused) | `PVM_ExecTick`'s status (1 signed byte), `sp`, `fp` |
+| `DETACH` `0x14` | — | — (breakpoints cleared, the program let run; if `PC` was on the `EXEC_INSTR` area, `PC`/`SP`/`FP` as after `PVM_Init`) |
+| `BRKP_SET` `0x20` | address(2) | — |
+| `BRKP_CLR` `0x21` | address(2) | — |
+| `BRKP_LIST` `0x22` | slot(1) | address(2), armed(1), slot count(1) |
+| `EXEC_INSTR` `0x34` | opcode(1), operand(2), length 1 or 3 (1); jumps, `CALL`/`RET`/`HALT` are refused; only while the VM is stopped | `PVM_ExecTick`'s status (1, signed), `sp`(2) |
 | `ERROR` `0x7F` | — | only ever sent by the device, in place of a command it could not carry out |
 
-A frame that fails its CRC gets no reply at all: the `cmd` field of a corrupt
-frame cannot be trusted either, so there is nothing to answer. Command codes
-are written out explicitly and with gaps between the groups — they travel
-between a host and a firmware that are built separately.
+`READ_DATA` addresses memory the way `LOAD` does and the way the `pvmc -l`
+listing gives variable addresses (`# variables:`) — so a variable's value is
+read straight from its address in the listing (`data` in the tool).
+
+A frame with a bad CRC gets no reply: the `cmd` field of a corrupt frame cannot
+be trusted either, so there is nothing to answer. Command codes are written out
+explicitly and grouped with gaps — they travel between a host and a firmware
+that are built separately.
+
+**Speed at 9600 baud** (Nucleo-F429ZI, ST-LINK VCP): one frame exchange takes
+about 26 ms (2 × 12.5 ms on the wire). Per tool command that comes to: `state`
+~80 ms (three exchanges: `STATE`, `REGS`, `READ_CODE`), `step` ~130 ms, `mem`
+~80 ms, `data` ~26 ms a word, `stack`/`dis` ~200 ms; a breakpoint hit after
+`run` is noticed within 0.1–0.25 s (the interval between `STATE` polls).
+`--host` runs about 35 instructions a second.
 
 ## What is not there yet
 

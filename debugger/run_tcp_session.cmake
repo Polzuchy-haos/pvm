@@ -44,7 +44,7 @@ expect("${out}" "the TCP session"
 	"over TCP"                    # it connected
 	"pc=0x0000"                   # to a board held before its first instruction
 	"stepped"                     # STEP made the round trip
-	"top first: 42"               # so did a snippet, bytes uploaded in several frames
+	"1024 words, "                 # MEM_INFO answered over the connection
 	"halted -- program finished"  # RUN, then polling a running board until it stopped
 	"square.hlc:"                 # the map named on the command line was used
 	"session closed")
@@ -67,5 +67,6 @@ expect("${out}" "the --host session over TCP"
 	"[host: square]"
 	"halted -- program finished"
 	"top first: 49"
+	"top first: 42"               # exec, one instruction at a time over the wire
 	"top first: 9 81"
 	"bad data address")

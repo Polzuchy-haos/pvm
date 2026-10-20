@@ -12,6 +12,7 @@
 #include "transport.h"
 
 #include "asm.h"
+#include "dbgclient.h"
 #include "disasm.h"
 #include "hostexec.h"
 #include "machine.h"
@@ -69,6 +70,8 @@ static void OnInterrupt(int sig){
 		return;
 	}
 
+	/* Same goodbye as "exit": see the end of main. */
+	g_link->exchange(g_link, DBGCMD_DETACH, 0, 0, g_frame);
 	printf("\npvmdbg: session closed\n");
 	exit(EXIT_SUCCESS);
 }
@@ -88,6 +91,13 @@ static void RunUntilStopped(void){
 
 /* ---- talking to the agent --------------------------------------------- */
 
+/* How much "dis" shows, and "stack" without a count. Every word and every 4
+ * bytes of code is a round trip of its own, so these stay modest. */
+#define DIS_LINES 			 (8)
+#define DIS_BYTES 			 (3 * DIS_LINES)
+#define STACK_DEFAULT 	 (8)
+#define DATA_MAX_WORDS 	 (32)
+
 static int Send(uint16_t cmd, const uint8_t* data, int dataLen){
 	return g_link->exchange(g_link, cmd, data, dataLen, g_frame);
 }
@@ -98,12 +108,20 @@ static int Reply(int len, uint16_t* cmd, const uint8_t** data){
 	return (len > 0 && PVMDBG_FrameParse(g_frame, len, cmd, data, &dataLen)) ? dataLen : -1;
 }
 
-static uint16_t Word(const uint8_t* p, int index){
-	return (uint16_t)((uint16_t)p[2 * index] | ((uint16_t)p[2 * index + 1] << 8));
-}
-
 static void NoAnswer(void){
 	printf("  no answer from the debug agent\n");
+}
+
+/* The program's length on the device, asked once: it does not change during a
+ * session, and it keeps a code window from running into the HALT padding the
+ * device returns past the end. 0xFFFF when the device does not say. */
+static uint16_t CodeLen(void){
+	static int 			known 	= 0;
+	static uint16_t codeLen = 0xFFFF;
+	uint16_t 				usrsect;
+
+	if(!known && DbgMemInfo(g_link, g_frame, 1, &codeLen, &usrsect) >= 0) known = 1;
+	return codeLen;
 }
 
 /* ---- output ----------------------------------------------------------- */
@@ -114,7 +132,6 @@ static const char* StopReason(uint8_t reason){
 	case DBGSTOP_STEP: 			 return "stepped";
 	case DBGSTOP_BREAKPOINT: return "breakpoint";
 	case DBGSTOP_HALTED: 		 return "halted -- program finished";
-	case DBGSTOP_EXEC_DONE:  return "snippet finished, back in the program";
 	default: 								 return "running";
 	}
 }
@@ -123,23 +140,19 @@ static const char* StopReason(uint8_t reason){
  * Bytecode is fetched from the device rather than from a local copy of the
  * program: over a wire the host has no copy at all, and where it does have one
  * it could be a rebuild ahead of what is actually running -- a disassembly that
- * quietly disagrees with the machine is worse than none at all.
+ * quietly disagrees with the machine is worse than none at all. Only as many
+ * bytes as the lines to show can need: one instruction is 3 bytes at most.
  */
 static void ShowCode(uint16_t addr, int maxLines){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint8_t 			 arg[3];
-	char 					 lines[PVMDBG_CFG_CODE_READ_MAX][PVMDBG_DISASM_LINE_MAX];
-	int 					 count;
+	uint8_t bytes[DIS_BYTES];
+	char 		lines[DIS_LINES][PVMDBG_DISASM_LINE_MAX];
+	int 		want = 3 * (maxLines < DIS_LINES ? maxLines : DIS_LINES);
+	int 		n 	 = DbgReadCode(g_link, g_frame, addr, bytes, want, CodeLen());
+	int 		count;
 
-	arg[0] = (uint8_t)(addr & 0xFF);
-	arg[1] = (uint8_t)(addr >> 8);
-	arg[2] = PVMDBG_CFG_CODE_READ_MAX;
+	if(n <= 0) return;
 
-	if(Reply(Send(DBGCMD_READ_CODE, arg, 3), &cmd, &d) < 1 || cmd != DBGCMD_READ_CODE)
-		return;
-
-	count = PvmDbgDisasm(d + 1, d[0], addr, maxLines, lines);
+	count = PvmDbgDisasm(bytes, n, addr, maxLines, lines);
 
 	for(int i = 0; i < count; i++)
 		printf("  %s %s\n", (i == 0) ? "->" : "  ", lines[i]);
@@ -160,114 +173,105 @@ static void ShowSource(uint16_t pc){
 					text ? "  " : "", text ? text : "");
 }
 
-/* What a finished snippet left on the stack -- its answer, if it was asked a
- * question. The agent kept it, because the stack itself is the program's again. */
-static void ShowExecResult(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-
-	if(Reply(Send(DBGCMD_EXEC_STATUS, 0, 0), &cmd, &d) < 2 || cmd != DBGCMD_EXEC_STATUS) return;
-	if(d[0] == DBGEXEC_ACTIVE){ printf("  snippet stopped before its end -- 'abort' drops it\n"); return; }
-	if(d[0] != DBGEXEC_DONE) return;
-
-	if(d[1] == 0){ printf("  snippet left nothing on the stack\n"); return; }
-
-	printf("  snippet left on the stack, top first:");
-	for(int i = 0; i < d[1]; i++) printf(" %d", (int)(int16_t)Word(d + 2, i));
-	printf("\n");
-}
-
 static void ShowState(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint16_t 			 pc;
-	uint8_t 			 reason;
-	int 					 len, inSnippet;
+	DbgState_s s;
 
-	len = Reply(Send(DBGCMD_STATE, 0, 0), &cmd, &d);
-	if(len < 8){ NoAnswer(); return; }
+	if(DbgGetState(g_link, g_frame, &s) < 0){ NoAnswer(); return; }
 
-	/* Taken out now: every Send below reuses the frame d points into. */
-	pc 				= Word(d, 0);
-	reason 		= d[7];
-	inSnippet = (len >= 9 && d[8]); /* an agent without EXEC sends eight bytes */
-
-	printf("  pc=0x%04X  sp=%u  fp=%u  %s%s\n", pc, Word(d, 1), Word(d, 2), StopReason(reason),
-					inSnippet ? "  [in snippet]" : "");
-
-	/* The instruction about to run, right under the numbers: an address on its
-	 * own means looking it up in a listing every single step. */
-	ShowCode(pc, 1);
-
-	/* A snippet's addresses are offsets into the device's buffer; the debug map
-	 * would match them to whatever program line happens to share the number. */
-	if(!inSnippet) ShowSource(pc);
-
-	if(reason == DBGSTOP_EXEC_DONE) ShowExecResult();
-}
-
-static void ShowStack(int count){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint8_t 			 arg = (uint8_t)count;
-
-	if(Reply(Send(DBGCMD_READ_STACK, &arg, 1), &cmd, &d) < 1 || cmd != DBGCMD_READ_STACK){
-		NoAnswer();
+	/* The agent reports this for a PC on its one-instruction area: the last
+	 * session ran a program from the host (--host) and never detached. */
+	if(s.pc == DBG_PC_NOT_IN_PROGRAM){
+		printf("  pc=----  sp=%u  fp=%u  %s -- PC is on host-fed code, 'reset' returns to the program\n",
+					 s.sp, s.fp, StopReason(s.reason));
 		return;
 	}
 
-	if(d[0] == 0){ printf("  stack is empty\n"); return; }
+	printf("  pc=0x%04X  sp=%u  fp=%u  %s\n", s.pc, s.sp, s.fp, StopReason(s.reason));
 
-	for(int i = 0; i < d[0]; i++)
-		printf("  [%d] %-6d%s\n", i, (int)(int16_t)Word(d + 1, i), (i == 0) ? "  <- top" : "");
+	/* The instruction about to run, right under the numbers: an address on its
+	 * own means looking it up in a listing every single step. */
+	ShowCode(s.pc, 1);
+	ShowSource(s.pc);
+}
+
+static void ShowStack(int count){
+	int16_t words[256];
+	int 		n = DbgReadStack(g_link, g_frame, words, count < 256 ? count : 256);
+
+	if(n < 0){ NoAnswer(); return; }
+	if(n == 0){ printf("  stack is empty\n"); return; }
+
+	for(int i = 0; i < n; i++)
+		printf("  [%d] %-6d%s\n", i, words[i], (i == 0) ? "  <- top" : "");
 }
 
 /* Sizes come from the device, not from PVM_CFG_*: the firmware picks its own
  * pools, and the defaults this host was built with say nothing about them.
- * Returns -1 for no answer, 0 for an agent built before MEM_INFO existed (it
- * answers ERROR), 1 with the sizes filled in. */
+ * Returns -1 for no answer, 0 for an agent that does not know MEM_INFO, 1 with
+ * the sizes filled in. */
 static int ReadMemInfo(uint16_t* stackLen, uint16_t* ramLen){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	int 					 len = Reply(Send(DBGCMD_MEM_INFO, 0, 0), &cmd, &d);
-
-	if(len < 0) 													 return -1;
-	if(cmd != DBGCMD_MEM_INFO || len < 4) return 0;
-
-	*stackLen = Word(d, 0);
-	*ramLen 	= Word(d, 1);
-	return 1;
+	return DbgMemInfo(g_link, g_frame, 0, stackLen, ramLen);
 }
 
 static void ShowMemory(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint16_t 			 stackLen, ramLen;
-	int 					 known = ReadMemInfo(&stackLen, &ramLen);
+	uint16_t stackLen, ramLen, codeLen, usrsectLen, sp, fp;
+	int 		 known = ReadMemInfo(&stackLen, &ramLen);
 
 	if(known < 0){ NoAnswer(); return; }
 	if(known == 0){ printf("  the device does not report its memory sizes\n"); return; }
 
 	/* How much of the stack is taken is what makes its size worth knowing. */
-	if(Reply(Send(DBGCMD_STATE, 0, 0), &cmd, &d) < 8)
-		printf("  stack  %u words\n", stackLen);
-	else
-		printf("  stack  %u words, %u in use\n", stackLen, Word(d, 1));
+	if(DbgGetRegs(g_link, g_frame, &sp, &fp) < 0) printf("  stack    %u words\n", stackLen);
+	else 																					 printf("  stack    %u words, %u in use\n", stackLen, sp);
 
-	if(ramLen == 0) printf("  ram    none\n");
-	else 						printf("  ram    %u words (addresses 0..%u)\n", ramLen, (unsigned)(ramLen - 1));
+	if(ramLen == 0) printf("  ram      none\n");
+	else 						printf("  ram      %u words (addresses 0..%u)\n", ramLen, (unsigned)(ramLen - 1));
+
+	if(DbgMemInfo(g_link, g_frame, 1, &codeLen, &usrsectLen) > 0){
+		if(usrsectLen == 0) printf("  usrsect  none\n");
+		else 								printf("  usrsect  %u words (addresses 0x%04X..0x%04X)\n", usrsectLen,
+																	 PVM_CFG_USRSECT_BGN, PVM_CFG_USRSECT_BGN + usrsectLen - 1);
+		printf("  code     %u bytes\n", codeLen);
+	}
+}
+
+/* Words of data memory, addressed the way LOAD addresses them -- RAM from 0,
+ * the user section from 0x4000 -- which is also how the listing gives the
+ * addresses of variables. */
+static void ShowData(const char* arg, const char* countArg){
+	char* end;
+	long 	addr 	= arg ? strtol(arg, &end, 0) : -1;
+	long 	count = countArg ? strtol(countArg, 0, 0) : 1;
+
+	if(!arg || *end || addr < 0 || addr > 0xFFFF){
+		printf("  expected an address, e.g. 'data 0' or 'data 0x4000 4'\n");
+		return;
+	}
+	if(count < 1) 							count = 1;
+	if(count > DATA_MAX_WORDS) count = DATA_MAX_WORDS;
+
+	for(long i = 0; i < count; i++){
+		int16_t value;
+		int 		r = DbgReadData(g_link, g_frame, (uint16_t)(addr + i), &value);
+
+		if(r < 0){ NoAnswer(); return; }
+		if(r == 0){
+			printf("  0x%04lX  -- not RAM or the user section\n", addr + i);
+			return;
+		}
+		printf("  0x%04lX  %-6d (0x%04X)\n", addr + i, value, (uint16_t)value);
+	}
 }
 
 static void ShowBreakpoints(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
+	uint16_t addrs[64];
+	int 		 n = DbgListBreakpoints(g_link, g_frame, addrs, 64);
 
-	if(Reply(Send(DBGCMD_BRKP_LIST, 0, 0), &cmd, &d) < 1){ NoAnswer(); return; }
+	if(n < 0){ NoAnswer(); return; }
+	if(n == 0){ printf("  no breakpoints set\n"); return; }
 
-	if(d[0] == 0){ printf("  no breakpoints set\n"); return; }
-
-	printf("  %u breakpoint(s):", d[0]);
-	for(int i = 0; i < d[0]; i++) printf(" 0x%04X", Word(d + 1, i));
+	printf("  %d breakpoint(s):", n);
+	for(int i = 0; i < n; i++) printf(" 0x%04X", addrs[i]);
 	printf("\n");
 }
 
@@ -279,18 +283,18 @@ static void ShowHelp(void){
 		"  reset           rewind to the first instruction and stop there\n"
 		"  state, i        where the program counter, stack and frame pointer are\n"
 		"  stack [n]       the top n words of the stack (8 by default)\n"
-		"  mem, m          stack and RAM sizes, and how much of the stack is in use\n"
+		"  mem, m          stack, RAM, user section and code sizes, and stack in use\n"
+		"  data, x <a> [n] n words of data memory from address a: RAM from 0, the\n"
+		"                  user section from 0x4000, as in the listing's variables\n"
 		"  break <where>   set a breakpoint: 'break 0x10', or 'break blink.hlc:21'\n"
 		"  clear <addr>    remove one\n"
 		"  breaks, b       list the ones that are set\n"
-		"  exec <code>     run code on the device without reflashing, e.g.\n"
-		"                  'exec LOAD 3; PUSH 1; ADD; STORE 3', or 'exec snippet.pvms'\n"
-		"                  or 'exec snippet.bin' -- at most 64 bytes of bytecode\n"
-		"  abort           drop a snippet that has not finished, back to the program\n"
+		"  exec <code>     with --host: run a few instructions on the device, e.g.\n"
+		"                  'exec LOAD 3; PUSH 1; ADD; STORE 3', or a .pvms / .bin file\n"
 		"  call <fn> [w..] with --host: push the words, run one function, stop when it\n"
 		"                  returns: 'call square 0 7' (a name needs the .lst beside the .bin)\n"
 		"  help, ?         this list\n"
-		"  exit, quit, q   end the session (so does Ctrl+C)\n");
+		"  exit, quit, q   end the session and let the program run on (so does Ctrl+C)\n");
 }
 
 /* ---- commands --------------------------------------------------------- */
@@ -370,91 +374,6 @@ static int EndsWith(const char* text, const char* suffix){
 	return n >= m && !strcmp(text + n - m, suffix);
 }
 
-/* Bytecode as pvmc -f bin wrote it. One byte more than fits is read on purpose,
- * so that a file that is too big is told apart from one that fits exactly. */
-static int LoadSnippetBin(const char* path, uint8_t* out, int outMax){
-	FILE* f = fopen(path, "rb");
-	int 	n;
-
-	if(!f){ printf("  cannot open '%s'\n", path); return -1; }
-
-	n = (int)fread(out, 1, (size_t)outMax, f);
-	if(n == outMax && fgetc(f) != EOF){
-		printf("  '%s' is bigger than the device's %d-byte buffer\n", path, outMax);
-		n = -1;
-	}
-
-	fclose(f);
-	return n;
-}
-
-/*
- * Uploads a snippet and runs it in the middle of the program, which stays where
- * it was stopped: the snippet has the program's stack, RAM, peripherals and
- * SVCs, and once it reaches its end the program is back exactly where it was --
- * apart from what the snippet changed on purpose. ShowState then reports what
- * it left on the stack.
- *
- * Inline code is assembled against the RAM and stack the device reports, so a
- * board with more RAM than the default is not refused addresses it really has.
- */
-static void ExecCmd(const char* rest){
-	uint8_t  code[PVMDBG_CFG_EXEC_SIZE];
-	uint8_t  payload[1 + PVMDBG_EXEC_CHUNK_MAX];
-	char 		 err[512];
-	uint16_t stackLen, ramLen, cmd;
-	int 		 len;
-	const uint8_t* d;
-
-	if(!*rest){
-		printf("  expected code, e.g. 'exec LOAD 3; PUSH 1; ADD; STORE 3', or a .pvms/.bin file\n");
-		return;
-	}
-
-	if(EndsWith(rest, ".bin"))
-		len = LoadSnippetBin(rest, code, (int)sizeof(code));
-	else{
-		if(EndsWith(rest, ".pvms"))
-			len = PvmDbgAssembleFile(rest, code, (int)sizeof(code), err, (int)sizeof(err));
-		else if(ReadMemInfo(&stackLen, &ramLen) > 0)
-			len = PvmDbgAssembleText(rest, ramLen, stackLen, code, (int)sizeof(code), err, (int)sizeof(err));
-		else
-			len = PvmDbgAssembleText(rest, -1, -1, code, (int)sizeof(code), err, (int)sizeof(err));
-
-		if(len < 0) printf("  %s\n", err);
-	}
-
-	if(len < 0) return;
-	if(len == 0){ printf("  no code to run\n"); return; }
-
-	for(int offset = 0; offset < len; offset += PVMDBG_EXEC_CHUNK_MAX){
-		int n = (len - offset < PVMDBG_EXEC_CHUNK_MAX) ? len - offset : PVMDBG_EXEC_CHUNK_MAX;
-
-		payload[0] = (uint8_t)offset;
-		memcpy(payload + 1, code + offset, (size_t)n);
-
-		if(Reply(Send(DBGCMD_EXEC_WRITE, payload, 1 + n), &cmd, &d) < 0){ NoAnswer(); return; }
-		if(cmd != DBGCMD_EXEC_WRITE){
-			printf("  refused: a snippet is still running ('abort' it), or the device cannot run snippets\n");
-			return;
-		}
-	}
-
-	payload[0] = (uint8_t)len;
-	if(Reply(Send(DBGCMD_EXEC_RUN, payload, 1), &cmd, &d) < 0){ NoAnswer(); return; }
-	if(cmd != DBGCMD_EXEC_RUN){
-		printf("  refused: the program has to be stopped first ('pause')\n");
-		return;
-	}
-
-	RunUntilStopped();
-
-	/* With --host the device's PC is not the program's, so only the answer is
-	 * worth showing. */
-	if(g_hostMode) ShowExecResult();
-	else 					 ShowState();
-}
-
 /* ---- the program on the host (--host) --------------------------------- */
 
 static const char* HostStopText(int stop){
@@ -473,17 +392,16 @@ static const char* HostStopText(int stop){
 /* Same shape as ShowState, but the PC and the code are the host's: the device
  * only contributes the stack, which is where the data lives. */
 static void HostShowState(int stop){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint16_t 			 pc 	= g_host.pc;
-	const char* 	 func = HostExecFuncAt(&g_host, pc);
-	char 					 lines[1][PVMDBG_DISASM_LINE_MAX];
+	uint16_t 		pc 	 = g_host.pc;
+	uint16_t 		sp, fp;
+	const char* func = HostExecFuncAt(&g_host, pc);
+	char 				lines[1][PVMDBG_DISASM_LINE_MAX];
 
 	if(stop == HOSTSTOP_ERROR || stop == HOSTSTOP_NO_ANSWER) printf("  %s\n", g_host.message);
 
-	if(Reply(Send(DBGCMD_STATE, 0, 0), &cmd, &d) < 8){ NoAnswer(); return; }
+	if(DbgGetRegs(g_link, g_frame, &sp, &fp) < 0){ NoAnswer(); return; }
 
-	printf("  pc=0x%04X  sp=%u  fp=%u  %s  [host%s%s]\n", pc, Word(d, 1), Word(d, 2), HostStopText(stop),
+	printf("  pc=0x%04X  sp=%u  fp=%u  %s  [host%s%s]\n", pc, sp, fp, HostStopText(stop),
 					func ? ": " : "", func ? func : "");
 
 	if(PvmDbgDisasm(g_host.code + pc, g_host.len - pc, pc, 1, lines) == 1) printf("  -> %s\n", lines[0]);
@@ -558,8 +476,82 @@ static void HostCallCmd(char* rest){
 	HostRun();
 }
 
+/* Bytecode as pvmc -f bin wrote it. One byte more than fits is read on purpose,
+ * so that a file that is too big is told apart from one that fits exactly. */
+static int LoadSnippetBin(const char* path, uint8_t* out, int outMax){
+	FILE* f = fopen(path, "rb");
+	int 	n;
+
+	if(!f){ printf("  cannot open '%s'\n", path); return -1; }
+
+	n = (int)fread(out, 1, (size_t)outMax, f);
+	if(n == outMax && fgetc(f) != EOF){
+		printf("  '%s' is over %d bytes -- that is a program, not a snippet\n", path, outMax);
+		n = -1;
+	}
+
+	fclose(f);
+	return n;
+}
+
+/*
+ * A few instructions run in the middle of the program, which stays where it
+ * was: they go to the device one at a time like any other host-fed code, and
+ * get the program's stack, RAM, peripherals and SVCs. What they leave on the
+ * stack is shown and taken off again. The device keeps no code for this -- the
+ * snippet lives here, as the program does.
+ *
+ * Inline code is assembled against the RAM and stack the device reports, so a
+ * board with more RAM than the default is not refused addresses it really has.
+ */
+static void HostExecCmd(const char* rest){
+	uint8_t  code[256];
+	char 		 err[512];
+	uint16_t stackLen, ramLen;
+	int 		 len, stop;
+
+	if(!*rest){
+		printf("  expected code, e.g. 'exec LOAD 3; PUSH 1; ADD; STORE 3', or a .pvms/.bin file\n");
+		return;
+	}
+
+	if(EndsWith(rest, ".bin"))
+		len = LoadSnippetBin(rest, code, (int)sizeof(code));
+	else{
+		if(EndsWith(rest, ".pvms"))
+			len = PvmDbgAssembleFile(rest, code, (int)sizeof(code), err, (int)sizeof(err));
+		else if(ReadMemInfo(&stackLen, &ramLen) > 0)
+			len = PvmDbgAssembleText(rest, ramLen, stackLen, code, (int)sizeof(code), err, (int)sizeof(err));
+		else
+			len = PvmDbgAssembleText(rest, -1, -1, code, (int)sizeof(code), err, (int)sizeof(err));
+
+		if(len < 0) printf("  %s\n", err);
+	}
+
+	if(len < 0) return;
+	if(len == 0){ printf("  no code to run\n"); return; }
+
+	g_inRun = 1;
+	stop 		= HostExecSnippet(&g_host, code, len);
+	g_inRun = 0;
+	TakeInterrupt();
+
+	if(stop != HOSTSTOP_HALTED){
+		printf("  snippet %s%s%s\n", HostStopText(stop),
+					 (stop == HOSTSTOP_ERROR || stop == HOSTSTOP_NO_ANSWER) ? ": " : "",
+					 (stop == HOSTSTOP_ERROR || stop == HOSTSTOP_NO_ANSWER) ? g_host.message : "");
+		return;
+	}
+
+	if(g_host.resultCount == 0){ printf("  snippet left nothing on the stack\n"); return; }
+
+	printf("  snippet left on the stack, top first:");
+	for(int i = 0; i < g_host.resultCount; i++) printf(" %d", g_host.result[i]);
+	printf("\n");
+}
+
 /* The commands that mean something else when the program is on the host.
- * Returns 0 for the rest, which work the same either way: stack, mem, exec. */
+ * Returns 0 for the rest, which work the same either way: stack, mem. */
 static int HostCommand(const char* verb, const char* arg, char* rest){
 	if(!strcmp(verb, "state") || !strcmp(verb, "i")) 			HostShowState(-1);
 	else if(!strcmp(verb, "run") || !strcmp(verb, "r")) 	HostRun();
@@ -570,11 +562,11 @@ static int HostCommand(const char* verb, const char* arg, char* rest){
 	else if(!strcmp(verb, "break")) 											 HostBreakpointCmd(1, arg);
 	else if(!strcmp(verb, "clear")) 											 HostBreakpointCmd(0, arg);
 	else if(!strcmp(verb, "call")) 												 HostCallCmd(rest);
-	else if(!strcmp(verb, "abort")){ Send(DBGCMD_EXEC_ABORT, 0, 0); HostShowState(-1); }
+	else if(!strcmp(verb, "exec")) 												 HostExecCmd(rest);
 	else if(!strcmp(verb, "dis") || !strcmp(verb, "d")){
-		char lines[PVMDBG_CFG_CODE_READ_MAX][PVMDBG_DISASM_LINE_MAX];
+		char lines[DIS_LINES][PVMDBG_DISASM_LINE_MAX];
 		int  n = PvmDbgDisasm(g_host.code + g_host.pc, g_host.len - g_host.pc, g_host.pc,
-													PVMDBG_CFG_CODE_READ_MAX, lines);
+													DIS_LINES, lines);
 
 		for(int i = 0; i < n; i++) printf("  %s %s\n", (i == 0) ? "->" : "  ", lines[i]);
 	}
@@ -589,6 +581,7 @@ static int Execute(char* line){
 	char  rest[256];
 	char* verb;
 	char* arg;
+	char* arg2;
 
 	/* Everything after the verb, kept whole before strtok cuts it up: "exec"
 	 * takes a line of code, not a single word. */
@@ -607,6 +600,7 @@ static int Execute(char* line){
 
 	verb = strtok(line, " \t\r\n");
 	arg  = strtok(0, " \t\r\n");
+	arg2 = arg ? strtok(0, " \t\r\n") : 0;
 
 	if(!verb) return 1;
 
@@ -621,14 +615,14 @@ static int Execute(char* line){
 	else if(!strcmp(verb, "break")) 												 BreakpointCmd(DBGCMD_BRKP_SET, arg);
 	else if(!strcmp(verb, "clear")) 												 BreakpointCmd(DBGCMD_BRKP_CLR, arg);
 	else if(!strcmp(verb, "dis") || !strcmp(verb, "d")){
-		const uint8_t* d;
-		uint16_t 			 cmd;
+		DbgState_s s;
 
-		if(Reply(Send(DBGCMD_STATE, 0, 0), &cmd, &d) < 8) NoAnswer();
-		else ShowCode(Word(d, 0), PVMDBG_CFG_CODE_READ_MAX);
+		if(DbgGetState(g_link, g_frame, &s) < 0) NoAnswer();
+		else ShowCode(s.pc, DIS_LINES);
 	}
+	else if(!strcmp(verb, "data") || !strcmp(verb, "x")) 	 ShowData(arg, arg2);
 	else if(!strcmp(verb, "stack")){
-		uint16_t count = PVMDBG_CFG_STACK_READ_MAX;
+		uint16_t count = STACK_DEFAULT;
 		if(arg) ParseAddr(arg, &count);
 		ShowStack((int)count);
 	}
@@ -650,11 +644,8 @@ static int Execute(char* line){
 		Send(DBGCMD_RESET, 0, 0);
 		ShowState();
 	}
-	else if(!strcmp(verb, "exec")) 													 ExecCmd(rest);
-	else if(!strcmp(verb, "abort")){
-		Send(DBGCMD_EXEC_ABORT, 0, 0);
-		ShowState();
-	}
+	else if(!strcmp(verb, "exec"))
+		printf("  exec runs code from the host -- start the session with --host program.bin\n");
 	else
 		printf("  unknown command '%s' -- try 'help'\n", verb);
 
@@ -667,6 +658,7 @@ static void Usage(void){
 	fprintf(stderr,
 		"usage: pvmdbg [program.bin]      debug a program in this process\n"
 		"       pvmdbg --port COM3        debug a board over a serial port\n"
+		"       --baud N                  its speed, 8N1 (default 9600)\n"
 		"       pvmdbg --tcp host:port    the same over TCP: a bridge to a board's UART,\n"
 		"                                 or pvmboard (just a port means this machine)\n"
 		"       --map <file.dbgmap>       source lines, from pvmc -g\n"
@@ -717,12 +709,16 @@ int main(int argc, char** argv){
 	const char* map 	 = 0;
 	const char* hostPath = 0;
 	int 				machine = 0;
+	int 				baud 		= PVMDBG_DEFAULT_BAUD;
 	char 				line[256];
 
 	for(int i = 1; i < argc; i++){
 		if(!strcmp(argv[i], "--port") || !strcmp(argv[i], "-p")){
 			if(++i >= argc){ Usage(); return EXIT_FAILURE; }
 			port = argv[i];
+		}
+		else if(!strcmp(argv[i], "--baud")){
+			if(++i >= argc || (baud = atoi(argv[i])) <= 0){ Usage(); return EXIT_FAILURE; }
 		}
 		else if(!strcmp(argv[i], "--tcp")){
 			if(++i >= argc){ Usage(); return EXIT_FAILURE; }
@@ -762,7 +758,7 @@ int main(int argc, char** argv){
 	/* Locally the in-process VM is the "device"; it is handed the same program
 	 * only because it needs one to start, and never runs it -- with --host, the
 	 * session feeds it instructions itself. */
-	if(port) 		 g_link = TransportSerialOpen(port);
+	if(port) 		 g_link = TransportSerialOpen(port, baud);
 	else if(tcp) g_link = TransportTcpOpen(tcp);
 	else 				 g_link = TransportLocalOpen(hostPath ? hostPath : (path ? path : PVM_DEFAULT_BYTECODE));
 	if(!g_link) return EXIT_FAILURE;
@@ -818,6 +814,10 @@ int main(int argc, char** argv){
 		if(!Execute(line)) break;
 	}
 
+	/* A board left paused, or with PC on host-fed code, would sit there for
+	 * good once nobody is attached: let it go -- breakpoints cleared, and a
+	 * program from --host replaced by the board's own, from its start. */
+	Send(DBGCMD_DETACH, 0, 0);
 	printf("pvmdbg: session closed\n");
 
 	g_link->close(g_link);

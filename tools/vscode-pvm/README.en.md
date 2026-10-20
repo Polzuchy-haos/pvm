@@ -127,6 +127,7 @@ you pick the `PVM` type):
 |---|---|
 | `program` | the `.bin` to debug in a VM inside `pvmdbg`, on this machine |
 | `port` | the board's serial port; used instead of `program`, since a board holds its own |
+| `baud` | the speed of `port`, 8N1; 9600 by default |
 | `tcp` | `host:port` — a board over TCP (a bridge to its UART, or `pvmboard`); instead of `port` |
 | `map` | the map from `pvmc -g`; guessed next to `program`, required with `port` |
 | `pvmdbg` | the path to `pvmdbg.exe` |

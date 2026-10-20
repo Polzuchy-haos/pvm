@@ -10,6 +10,7 @@
  */
 #include "hostexec.h"
 
+#include "dbgclient.h"
 #include "disasm.h"
 #include "pvm.h"
 #include "pvmdbg.h"
@@ -20,11 +21,6 @@
 #include <string.h>
 
 /* ---- talking to the device ---------------------------------------------- */
-
-static int Reply(HostExec_s* hx, int len, uint16_t* cmd, const uint8_t** data){
-	int dataLen;
-	return (len > 0 && PVMDBG_FrameParse(hx->frame, len, cmd, data, &dataLen)) ? dataLen : -1;
-}
 
 static uint16_t Get16(const uint8_t* p){
 	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -53,24 +49,26 @@ static const char* ErrorName(int status){
 }
 
 /* Has the device execute one instruction. HOSTSTOP_STEP when it went through,
- * otherwise why not -- with the device's own error code when it has one. */
+ * otherwise why not -- with the device's own error code when it has one. The
+ * length goes along as the fourth byte: the frame always carries four, and the
+ * device has to know which of them are the instruction. */
 static int Device(HostExec_s* hx, const uint8_t* instr, int size){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	int8_t 				 status;
+	uint8_t arg[PVMDBG_DATA_SIZE] = { instr[0], size > 1 ? instr[1] : 0, size > 2 ? instr[2] : 0, (uint8_t)size };
+	uint8_t d[PVMDBG_DATA_SIZE];
+	int 		r = DbgCommand(hx->link, hx->frame, DBGCMD_EXEC_INSTR, arg, PVMDBG_DATA_SIZE, d);
+	int8_t 	status;
 
-	if(Reply(hx, hx->link->exchange(hx->link, DBGCMD_EXEC_INSTR, instr, size, hx->frame), &cmd, &d) < 0){
+	if(r < 0){
 		Fail(hx, "no answer from the debug agent");
 		return HOSTSTOP_NO_ANSWER;
 	}
 
-	if(cmd != DBGCMD_EXEC_INSTR)
-		return Fail(hx, "the device refused the instruction: it has to be stopped, and not in a snippet "
+	if(r != DBGCMD_EXEC_INSTR)
+		return Fail(hx, "the device refused the instruction: it has to be stopped "
 										"(or its firmware is too old for EXEC_INSTR)");
 
 	status = (int8_t)d[0];
 	hx->sp = Get16(d + 1);
-	hx->fp = Get16(d + 3);
 
 	if(status != ERRORCODE_NO_ERROR)
 		return Fail(hx, "execution error %d (%s) at 0x%04X", status, ErrorName(status), hx->pc);
@@ -91,26 +89,12 @@ static int DevicePop(HostExec_s* hx){
 /* The top `count` words of the device's stack, top first; returns how many
  * there were, or -1 for no answer. */
 static int DeviceTop(HostExec_s* hx, int16_t* out, int count){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint8_t 			 arg = (uint8_t)count;
-
-	if(Reply(hx, hx->link->exchange(hx->link, DBGCMD_READ_STACK, &arg, 1, hx->frame), &cmd, &d) < 1 ||
-		 cmd != DBGCMD_READ_STACK)
-		return -1;
-
-	for(int i = 0; i < d[0]; i++) out[i] = (int16_t)Get16(d + 1 + 2 * i);
-	return d[0];
+	return DbgReadStack(hx->link, hx->frame, out, count);
 }
 
 static int DeviceDepth(HostExec_s* hx, uint16_t* sp){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-
-	if(Reply(hx, hx->link->exchange(hx->link, DBGCMD_STATE, 0, 0, hx->frame), &cmd, &d) < 8) return 0;
-
-	*sp = Get16(d + 2);
-	return 1;
+	uint16_t fp;
+	return DbgGetRegs(hx->link, hx->frame, sp, &fp) > 0;
 }
 
 /* ---- control flow, done here -------------------------------------------- */
@@ -119,11 +103,10 @@ static int ValidTarget(const HostExec_s* hx, int16_t target){
 	return target >= 0 && target < hx->len;
 }
 
-/* The function "call" started has just been returned from: keep what it left
- * above the depth it started at, then take it off so the program's own stack is
- * as it was. */
-static int FinishCall(HostExec_s* hx){
-	int above = (int)hx->sp - (int)hx->callBaseSp;
+/* Keeps what lies above stack depth `base` in `result`, then takes it off, so
+ * the program's own stack is as it was before a call or a snippet. */
+static int TakeAbove(HostExec_s* hx, uint16_t sp, uint16_t base){
+	int above = (int)sp - (int)base;
 	int n 		= above;
 
 	if(n > HOSTEXEC_RESULT_MAX) n = HOSTEXEC_RESULT_MAX;
@@ -136,6 +119,14 @@ static int FinishCall(HostExec_s* hx){
 		int r = DevicePop(hx);
 		if(r != HOSTSTOP_STEP) return r;
 	}
+
+	return HOSTSTOP_STEP;
+}
+
+/* The function "call" started has just been returned from. */
+static int FinishCall(HostExec_s* hx){
+	int r = TakeAbove(hx, hx->sp, hx->callBaseSp);
+	if(r != HOSTSTOP_STEP) return r;
 
 	hx->pc 			= hx->callReturnPc;
 	hx->calling = 0;
@@ -258,6 +249,45 @@ int HostExecCall(HostExec_s* hx, uint16_t addr, const int16_t* args, int argCoun
 	hx->calling 		 = 1;
 	hx->resultCount  = 0;
 	return 1;
+}
+
+int HostExecSnippet(HostExec_s* hx, const uint8_t* code, int len){
+	uint8_t* saveCode 	 = hx->code;
+	int 		 saveLen 		 = hx->len;
+	uint16_t saveP 			 = hx->pc;
+	int 		 saveBrkp 	 = hx->brkpCount;
+	int 		 saveCalling = hx->calling;
+	uint8_t* buf 				 = malloc((size_t)len + 1);
+	uint16_t base, sp;
+	int 		 stop, r;
+
+	if(!buf) return Fail(hx, "out of memory");
+	if(!DeviceDepth(hx, &base)){ free(buf); Fail(hx, "no answer from the debug agent"); return HOSTSTOP_NO_ANSWER; }
+
+	/* A HALT after it, so a snippet needs none of its own. */
+	memcpy(buf, code, (size_t)len);
+	buf[len] = INSTR_HALT;
+
+	hx->code 			= buf;
+	hx->len 			= len + 1;
+	hx->pc 				= 0;
+	hx->brkpCount = 0; /* the program's addresses, meaningless in here */
+	hx->calling 	= 0;
+
+	stop = HostExecRun(hx);
+
+	hx->code 			= saveCode;
+	hx->len 			= saveLen;
+	hx->pc 				= saveP;
+	hx->brkpCount = saveBrkp;
+	hx->calling 	= saveCalling;
+	free(buf);
+
+	/* Tidied up even when it failed partway: the program's stack is the point. */
+	if(!DeviceDepth(hx, &sp)){ Fail(hx, "no answer from the debug agent"); return HOSTSTOP_NO_ANSWER; }
+	r = TakeAbove(hx, sp, base);
+
+	return (stop == HOSTSTOP_HALTED && r != HOSTSTOP_STEP) ? r : stop;
 }
 
 void HostExecReset(HostExec_s* hx){

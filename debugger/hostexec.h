@@ -34,7 +34,7 @@
 #define HOSTEXEC_BRKP_MAX (32)
 #define HOSTEXEC_FUNC_MAX (64)
 #define HOSTEXEC_NAME_MAX (32)
-#define HOSTEXEC_RESULT_MAX (8) /* = PVMDBG_CFG_STACK_READ_MAX: one READ_STACK */
+#define HOSTEXEC_RESULT_MAX (8) /* words kept from what a call or snippet left */
 
 /* The return address "call" pushes under a function it starts. A program PC is
  * never 0xFFFF, so a RET to it can only mean that function is done. */
@@ -105,6 +105,18 @@ int  HostExecRun(HostExec_s* hx);
  * where it was. Returns 0 with `message` set if it cannot start.
  */
 int  HostExecCall(HostExec_s* hx, uint16_t addr, const int16_t* args, int argCount);
+
+/*
+ * Runs `code` -- a few instructions assembled on the host, not part of the
+ * program -- the same way the program runs: data instructions on the device,
+ * control flow here, jump addresses counting from the snippet's own start. The
+ * program's PC, its breakpoints and any call in progress are left as they are.
+ * Whatever the snippet leaves above the stack depth it started at goes into
+ * `result` and is popped, so the stack is as it was -- unless the snippet took
+ * the program's own values off it. Returns a HostStop_e: HOSTSTOP_HALTED when
+ * it ran to its end.
+ */
+int  HostExecSnippet(HostExec_s* hx, const uint8_t* code, int len);
 
 /* 1 when set/cleared, 0 with `message` set otherwise. */
 int  HostExecBreak(HostExec_s* hx, uint16_t addr, int set);

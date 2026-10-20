@@ -3,7 +3,7 @@ step
 step
 stack
 mem
-exec PUSH 20; PUSH 22; ADD
+exec PUSH 1
 breaks
 run
 exit

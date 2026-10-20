@@ -10,8 +10,9 @@
  *   > poll                  < ok running=0          (came to rest)
  *   > stack 4               < ok n=2 v0=3 v1=5
  *   > code 39 8             < ok n=8 b0=26 b1=0 ...
+ *   > data 0x4000 2         < ok n=2 v0=1 v1=0      (data memory, from an address)
  *   > mem                   < ok stack=1024 ram=64
- *   > quit                  < ok
+ *   > quit                  < ok          (and the board is let go: DETACH)
  *
  * Anything that goes wrong answers "error <reason>", so the caller never has to
  * guess from silence.
@@ -24,6 +25,7 @@
  */
 #include "machine.h"
 
+#include "dbgclient.h"
 #include "pvmdbg.h"
 
 #include <stdio.h>
@@ -34,21 +36,12 @@
  * wait, short enough that a pause never feels stuck. */
 #define POLL_BUDGET_MS (60)
 
+/* Most a single "stack"/"code"/"data" hands back: every item is a request of
+ * its own now, and the caller asks again for more. */
+#define LIST_MAX (32)
+
 static Transport_s* g_link = 0;
 static char 				g_frame[PVMDBG_CFG_BUF_SIZE];
-
-static int Send(uint16_t cmd, const uint8_t* data, int dataLen){
-	return g_link->exchange(g_link, cmd, data, dataLen, g_frame);
-}
-
-static int Reply(int len, uint16_t* cmd, const uint8_t** data){
-	int dataLen;
-	return (len > 0 && PVMDBG_FrameParse(g_frame, len, cmd, data, &dataLen)) ? dataLen : -1;
-}
-
-static uint16_t Word(const uint8_t* p, int index){
-	return (uint16_t)((uint16_t)p[2 * index] | ((uint16_t)p[2 * index + 1] << 8));
-}
 
 static void Fail(const char* reason){
 	printf("error %s\n", reason);
@@ -62,94 +55,109 @@ static void Ok(const char* tail){
 
 /* A command that carries a 16-bit argument and expects nothing back. */
 static void Simple(uint16_t cmd, int argc, long a0){
-	const uint8_t* d;
-	uint16_t 			 replyCmd;
-	uint8_t 			 payload[2];
+	uint8_t payload[2];
+	int 		r;
 
-	if(argc > 0){
-		payload[0] = (uint8_t)(a0 & 0xFF);
-		payload[1] = (uint8_t)((a0 >> 8) & 0xFF);
-	}
+	payload[0] = (uint8_t)(a0 & 0xFF);
+	payload[1] = (uint8_t)((a0 >> 8) & 0xFF);
 
-	if(Reply(Send(cmd, argc > 0 ? payload : 0, argc > 0 ? 2 : 0), &replyCmd, &d) < 0){
-		Fail("no-answer");
-		return;
-	}
-
-	if(replyCmd == DBGCMD_ERROR) Fail("refused");
-	else 												 Ok("");
+	r = DbgCommand(g_link, g_frame, cmd, argc > 0 ? payload : 0, argc > 0 ? 2 : 0, 0);
+	if(r < 0) 							 Fail("no-answer");
+	else if(r == DBGCMD_ERROR) Fail("refused");
+	else 										 Ok("");
 }
 
 static void CmdState(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	char 					 tail[96];
+	DbgState_s s;
+	char 			 tail[96];
 
-	if(Reply(Send(DBGCMD_STATE, 0, 0), &cmd, &d) < 8){ Fail("no-answer"); return; }
+	if(DbgGetState(g_link, g_frame, &s) < 0){ Fail("no-answer"); return; }
 
-	snprintf(tail, sizeof(tail), "pc=%u sp=%u fp=%u mode=%u reason=%u",
-					 Word(d, 0), Word(d, 1), Word(d, 2), d[6], d[7]);
+	snprintf(tail, sizeof(tail), "pc=%u sp=%u fp=%u mode=%u reason=%u", s.pc, s.sp, s.fp, s.mode, s.reason);
 	Ok(tail);
+}
+
+/* Shared by "stack", "breaks", "code" and "data": a count, then that many values. */
+static void ReplyList(const int* values, int n, const char* prefix){
+	char tail[1024];
+	int  used = snprintf(tail, sizeof(tail), "n=%d", n);
+
+	for(int i = 0; i < n && used > 0 && used < (int)sizeof(tail); i++)
+		used += snprintf(tail + used, sizeof(tail) - (size_t)used, " %s%d=%d", prefix, i, values[i]);
+
+	Ok(tail);
+}
+
+static int Clamp(long count){
+	return (count < 0) ? 0 : (count > LIST_MAX) ? LIST_MAX : (int)count;
+}
+
+static void CmdStack(long count){
+	int16_t words[LIST_MAX];
+	int 		values[LIST_MAX];
+	int 		n = DbgReadStack(g_link, g_frame, words, Clamp(count));
+
+	if(n < 0){ Fail("no-answer"); return; }
+	for(int i = 0; i < n; i++) values[i] = words[i];
+	ReplyList(values, n, "v");
+}
+
+static void CmdBreaks(void){
+	uint16_t addrs[64];
+	int 		 values[64];
+	int 		 n = DbgListBreakpoints(g_link, g_frame, addrs, 64);
+
+	if(n < 0){ Fail("no-answer"); return; }
+	for(int i = 0; i < n; i++) values[i] = addrs[i];
+	ReplyList(values, n, "a");
+}
+
+static void CmdCode(long addr, long count){
+	uint8_t  bytes[LIST_MAX];
+	int 		 values[LIST_MAX];
+	uint16_t codeLen = 0xFFFF, unused;
+	int 		 n;
+
+	if(DbgMemInfo(g_link, g_frame, 1, &codeLen, &unused) < 0){ Fail("no-answer"); return; }
+	if(addr < 0 || addr >= codeLen){ Fail("refused"); return; }
+
+	n = DbgReadCode(g_link, g_frame, (uint16_t)addr, bytes, Clamp(count), codeLen);
+	if(n < 0){ Fail("no-answer"); return; }
+
+	for(int i = 0; i < n; i++) values[i] = bytes[i];
+	ReplyList(values, n, "b");
+}
+
+/* Words of data memory from an address -- RAM from 0, the user section from
+ * 0x4000 -- stopping at the first one the device refuses. */
+static void CmdData(long addr, long count){
+	int values[LIST_MAX];
+	int n = 0;
+
+	for(int i = 0; i < Clamp(count); i++){
+		int16_t value;
+		int 		r = DbgReadData(g_link, g_frame, (uint16_t)(addr + i), &value);
+
+		if(r < 0){ Fail("no-answer"); return; }
+		if(r == 0) break;
+		values[n++] = value;
+	}
+
+	if(n == 0){ Fail("refused"); return; }
+	ReplyList(values, n, "v");
 }
 
 /* Pool sizes in words, as the device reports them. */
 static void CmdMem(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	char 					 tail[48];
+	uint16_t stackLen, ramLen;
+	char 		 tail[48];
+	int 		 r = DbgMemInfo(g_link, g_frame, 0, &stackLen, &ramLen);
 
-	int 					 len = Reply(Send(DBGCMD_MEM_INFO, 0, 0), &cmd, &d);
+	if(r < 0){ Fail("no-answer"); return; }
+	if(r == 0){ Fail("refused"); return; }
 
-	if(len < 0){ Fail("no-answer"); return; }
-	/* An agent built before MEM_INFO existed answers ERROR, with no payload. */
-	if(cmd != DBGCMD_MEM_INFO || len < 4){ Fail("refused"); return; }
-
-	snprintf(tail, sizeof(tail), "stack=%u ram=%u", Word(d, 0), Word(d, 1));
+	snprintf(tail, sizeof(tail), "stack=%u ram=%u", stackLen, ramLen);
 	Ok(tail);
-}
-
-/* Shared by "stack" and "breaks" and "code": a count, then that many values. */
-static void ReplyList(const uint8_t* d, int wordSized, const char* prefix){
-	char 	tail[512];
-	int 	used = snprintf(tail, sizeof(tail), "n=%u", d[0]);
-
-	for(int i = 0; i < d[0] && used > 0 && used < (int)sizeof(tail); i++){
-		int value = wordSized ? (int)(int16_t)Word(d + 1, i) : (int)d[1 + i];
-		used += snprintf(tail + used, sizeof(tail) - (size_t)used, " %s%d=%d", prefix, i, value);
-	}
-
-	Ok(tail);
-}
-
-static void CmdStack(long count){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint8_t 			 arg = (uint8_t)count;
-
-	if(Reply(Send(DBGCMD_READ_STACK, &arg, 1), &cmd, &d) < 1){ Fail("no-answer"); return; }
-	ReplyList(d, 1, "v");
-}
-
-static void CmdBreaks(void){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-
-	if(Reply(Send(DBGCMD_BRKP_LIST, 0, 0), &cmd, &d) < 1){ Fail("no-answer"); return; }
-	ReplyList(d, 1, "a");
-}
-
-static void CmdCode(long addr, long count){
-	const uint8_t* d;
-	uint16_t 			 cmd;
-	uint8_t 			 arg[3];
-
-	arg[0] = (uint8_t)(addr & 0xFF);
-	arg[1] = (uint8_t)((addr >> 8) & 0xFF);
-	arg[2] = (uint8_t)count;
-
-	if(Reply(Send(DBGCMD_READ_CODE, arg, 3), &cmd, &d) < 1){ Fail("no-answer"); return; }
-	if(cmd == DBGCMD_ERROR){ Fail("refused"); return; }
-	ReplyList(d, 0, "b");
 }
 
 static void CmdPoll(void){
@@ -164,7 +172,7 @@ int MachineRun(Transport_s* link){
 
 	/* Stopped before the first command, exactly as the terminal session does, so
 	 * nothing moves while the far end is still deciding what to ask for. */
-	Send(DBGCMD_PAUSE, 0, 0);
+	DbgCommand(g_link, g_frame, DBGCMD_PAUSE, 0, 0, 0);
 
 	while(fgets(line, (int)sizeof(line), stdin)){
 		char* verb = strtok(line, " \t\r\n");
@@ -186,12 +194,16 @@ int MachineRun(Transport_s* link){
 		else if(!strcmp(verb, "breaks"))  CmdBreaks();
 		else if(!strcmp(verb, "break")) 	 Simple(DBGCMD_BRKP_SET, 1, a0);
 		else if(!strcmp(verb, "clear")) 	 Simple(DBGCMD_BRKP_CLR, 1, a0);
-		else if(!strcmp(verb, "stack")) 	 CmdStack(arg0 ? a0 : PVMDBG_CFG_STACK_READ_MAX);
-		else if(!strcmp(verb, "code")) 	 CmdCode(a0, arg1 ? a1 : PVMDBG_CFG_CODE_READ_MAX);
+		else if(!strcmp(verb, "stack")) 	 CmdStack(arg0 ? a0 : 8);
+		else if(!strcmp(verb, "code")) 	 CmdCode(a0, arg1 ? a1 : 16);
+		else if(!strcmp(verb, "data")) 	 CmdData(a0, arg1 ? a1 : 1);
 		else if(!strcmp(verb, "mem")) 		 CmdMem();
 		else 														 Fail("unknown-command");
 	}
 
+	/* As the terminal session does on "exit": the board goes back to running
+	 * its program rather than staying paused with nobody attached. */
+	DbgCommand(g_link, g_frame, DBGCMD_DETACH, 0, 0, 0);
 	link->close(link);
 	return EXIT_SUCCESS;
 }

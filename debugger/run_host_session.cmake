@@ -24,6 +24,7 @@ set(expected
 	"halted -- program finished" # and ran the program to its HALT
 	"top first: 49"              # the device did the work: RESULT = 7 * 7 in its RAM
 	"top first: 9 81"            # 'call' ran one function and showed what it left
+	"top first: 42"              # exec ran a snippet from the host, an instruction at a time
 	"bad data address"           # a call without arguments fails on the device, and says so
 	"session closed"
 )

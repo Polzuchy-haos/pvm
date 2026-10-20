@@ -126,9 +126,9 @@ static int StreamSettle(Transport_s* self, int budgetMs){
 		int 					 len = StreamExchange(self, DBGCMD_STATE, 0, 0, frame);
 
 		if(len > 0 && PVMDBG_FrameParse(frame, len, &replyCmd, &payload, &payloadLen) &&
-			 replyCmd == DBGCMD_STATE && payloadLen >= 8){
+			 replyCmd == DBGCMD_STATE){
 			silence = 0;
-			if(payload[6] != DBGMODE_RUNNING) return 1;
+			if(payload[2] != DBGMODE_RUNNING) return 1; /* pc(2) mode(1) reason(1) */
 		}
 		else if(++silence >= SETTLE_SILENCE_LIMIT){
 			/* stderr, because stdout may be carrying a machine protocol */

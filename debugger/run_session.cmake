@@ -29,7 +29,7 @@ set(expected
 	"stepped"                   # 'step' ran exactly one instruction and said so
 	"no breakpoints set"        # 'breaks' reached the agent and got a real answer
 	"in use"                    # 'mem' got the pool sizes and the stack depth
-	"top first: 42"             # 'exec' assembled, uploaded and ran a snippet
+	"start the session with --host" # without one, exec says how to get it
 	"halted -- program finished" # 'run' carried the program to its HALT
 	"square.hlc:"               # the map beside the .bin was found and used
 	"session closed"            # 'exit' ended the session rather than the process dying

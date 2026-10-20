@@ -220,6 +220,9 @@ int main(int argc, char** argv){
 			if(n <= 0 || !Serve(&dbg, client, frame, &have)){
 				NetClose(client);
 				client = NET_INVALID;
+				/* Unlike a UART, a socket says when the debugger has gone: let the
+				 * program go even if it never got to send DETACH. */
+				PVMDBG_Detach(&dbg);
 				fprintf(stderr, "pvmboard: debugger disconnected\n");
 				if(once) break;
 			}

@@ -13,6 +13,8 @@ add_executable(pvmdbg
 	asm.cpp
 	hostexec.h
 	hostexec.c
+	dbgclient.h
+	dbgclient.c
 	sourcemap.h
 	sourcemap.c
 	machine.h
