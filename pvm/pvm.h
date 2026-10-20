@@ -129,6 +129,10 @@ int PVM_ExecTick(PVM_State_s* state);
 int PVM_Pop(PVM_State_s* state, PVM_Word_t* value);
 int PVM_Push(PVM_State_s* state, PVM_Word_t value);
 
-void PVM_PrintInstr(PVM_State_s* state);
+/* A data word as LOAD would see it -- RAM or the user section -- or
+ * ERRORCODE_BAD_DADR for an address that is neither. */
+int PVM_ReadData(PVM_State_s* state, PVM_Word_t adr, PVM_Word_t* data);
+
+/* PVM_PrintInstr lives in pvmprint.h. */
 
 #endif /* PVM_H_ */

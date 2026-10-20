@@ -1,0 +1,9 @@
+state
+step
+step
+stack
+mem
+exec PUSH 20; PUSH 22; ADD
+breaks
+run
+exit

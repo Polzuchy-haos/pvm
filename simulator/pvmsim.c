@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "pvm.h"
+#include "pvmprint.h"
 #include "pvmenv.h"
 
 #ifndef PVM_DEFAULT_BYTECODE

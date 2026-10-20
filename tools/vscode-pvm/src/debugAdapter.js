@@ -69,6 +69,7 @@ class PvmDebugSession extends LoggingDebugSession {
 		const spawnArgs = [];
 
 		if (args.port) spawnArgs.push('--port', args.port);
+		else if (args.tcp) spawnArgs.push('--tcp', args.tcp);
 		else if (args.program) spawnArgs.push(args.program);
 		spawnArgs.push('--machine');
 

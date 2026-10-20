@@ -233,6 +233,128 @@ int main(void){
   Exchange(&dbg, buf, DBGCMD_BRKP_CLR, arg, 2);
   CHECK(ReplyCmd(buf) == DBGCMD_BRKP_CLR, "clearing an address twice is not an error");
 
+  /* ---- running uploaded code ---- */
+  {
+    /* PUSH 42; STORE 2; LOAD 2; PUSH 1; ADD -- writes RAM, leaves 43 behind, no HALT */
+    static const uint8_t snippet[] = {
+      0x00, 0x2A, 0x00, 0x0E, 0x02, 0x00, 0x0D, 0x02, 0x00, 0x00, 0x01, 0x00, 0x04
+    };
+    uint8_t chunk[1 + 8];
+    PVM_Word_t top = 0;
+
+    PVM_Push(&vm, 77); /* something of the program's own, to be found intact afterwards */
+
+    chunk[0] = PVMDBG_CFG_EXEC_SIZE - 2; chunk[1] = chunk[2] = chunk[3] = 0;
+    Exchange(&dbg, buf, DBGCMD_EXEC_WRITE, chunk, 4);
+    CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "EXEC_WRITE past the end of the buffer is refused");
+
+    /* Two pieces at two offsets, the way a host uploads anything bigger than a frame. */
+    chunk[0] = 0; memcpy(chunk + 1, snippet, 8);
+    Exchange(&dbg, buf, DBGCMD_EXEC_WRITE, chunk, 1 + 8);
+    CHECK(ReplyCmd(buf) == DBGCMD_EXEC_WRITE, "EXEC_WRITE fills the buffer");
+    chunk[0] = 8; memcpy(chunk + 1, snippet + 8, sizeof(snippet) - 8);
+    Exchange(&dbg, buf, DBGCMD_EXEC_WRITE, chunk, 1 + (int)sizeof(snippet) - 8);
+
+    arg[0] = (uint8_t)sizeof(snippet);
+    Exchange(&dbg, buf, DBGCMD_EXEC_RUN, arg, 1);
+    CHECK(ReplyCmd(buf) == DBGCMD_EXEC_RUN, "EXEC_RUN starts a snippet from a stopped VM");
+
+    Exchange(&dbg, buf, DBGCMD_STATE, 0, 0);
+    CHECK(ReplyWord(buf, 0) == 0, "STATE shows PC at the start of the snippet");
+    CHECK(((const uint8_t*)buf)[PAYLOAD_AT + 8] == 1, "and says the VM is in a snippet");
+
+    CHECK(RunLoop(&dbg, 100) == 5, "the snippet runs its five instructions and stops on the HALT after them");
+    CHECK(g_ram[2] == 42, "what the snippet stored stays stored");
+    CHECK(PcOf(&vm) == 7, "PC is back where the program was interrupted");
+    CHECK(vm.code_ptr == (uint8_t*)g_code, "and so is the program's code");
+    CHECK(PVM_Pop(&vm, &top) == ERRORCODE_NO_ERROR && top == 77 && vm.SP == vm.stack,
+          "the program's stack is exactly as it was");
+
+    Exchange(&dbg, buf, DBGCMD_STATE, 0, 0);
+    CHECK(((const uint8_t*)buf)[PAYLOAD_AT + 7] == DBGSTOP_EXEC_DONE, "STATE says why it stopped");
+    CHECK(((const uint8_t*)buf)[PAYLOAD_AT + 8] == 0, "and that the snippet is over");
+
+    Exchange(&dbg, buf, DBGCMD_EXEC_STATUS, 0, 0);
+    CHECK(((const uint8_t*)buf)[PAYLOAD_AT] == DBGEXEC_DONE, "EXEC_STATUS reports it done");
+    CHECK(((const uint8_t*)buf)[PAYLOAD_AT + 1] == 1, "with the one word it left behind");
+    CHECK(ReplyWord(buf, 1) == 43, "which is LOAD 2 + 1");
+
+    /* JMP 0: a snippet that never finishes, which is what ABORT is for. */
+    chunk[0] = 0; chunk[1] = 0x0A; chunk[2] = 0x00; chunk[3] = 0x00;
+    Exchange(&dbg, buf, DBGCMD_EXEC_WRITE, chunk, 4);
+    arg[0] = 3;
+    Exchange(&dbg, buf, DBGCMD_EXEC_RUN, arg, 1);
+    CHECK(RunLoop(&dbg, 50) == 50, "a looping snippet keeps the VM busy");
+
+    Exchange(&dbg, buf, DBGCMD_EXEC_WRITE, chunk, 4);
+    CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "the buffer cannot be rewritten under a running snippet");
+    Exchange(&dbg, buf, DBGCMD_EXEC_RUN, arg, 1);
+    CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "nor can a second snippet be started");
+
+    arg[0] = 0; arg[1] = 0; arg[2] = 4;
+    Exchange(&dbg, buf, DBGCMD_READ_CODE, arg, 3);
+    CHECK(ListedCount(buf) == 4 && ((const uint8_t*)buf)[PAYLOAD_AT + 1] == 0x0A &&
+          ((const uint8_t*)buf)[PAYLOAD_AT + 4] == INSTR_HALT,
+          "READ_CODE shows the snippet, with the HALT the agent put after it");
+
+    arg[0] = 3; arg[1] = 0;
+    Exchange(&dbg, buf, DBGCMD_BRKP_SET, arg, 2);
+    Exchange(&dbg, buf, DBGCMD_BRKP_LIST, 0, 0);
+    CHECK(ListedCount(buf) == 1 && ListedAddr(buf, 0) == 3,
+          "a breakpoint set during a snippet is still a program address");
+    Exchange(&dbg, buf, DBGCMD_BRKP_CLR, arg, 2);
+
+    Exchange(&dbg, buf, DBGCMD_EXEC_ABORT, 0, 0);
+    CHECK(ReplyCmd(buf) == DBGCMD_EXEC_ABORT, "EXEC_ABORT drops it");
+    CHECK(PcOf(&vm) == 7 && vm.SP == vm.stack, "and hands the VM back to the program");
+    CHECK(PVMDBG_IsAccessExecTick(&dbg) == 0, "stopped");
+    Exchange(&dbg, buf, DBGCMD_EXEC_STATUS, 0, 0);
+    CHECK(((const uint8_t*)buf)[PAYLOAD_AT] == DBGEXEC_ABORTED &&
+          ((const uint8_t*)buf)[PAYLOAD_AT + 1] == 0, "an aborted snippet leaves no result");
+
+    Exchange(&dbg, buf, DBGCMD_RUN, 0, 0);
+    arg[0] = 3;
+    Exchange(&dbg, buf, DBGCMD_EXEC_RUN, arg, 1);
+    CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "a snippet is only started from a stopped VM");
+    Exchange(&dbg, buf, DBGCMD_PAUSE, 0, 0);
+  }
+
+  /* ---- one instruction at a time, for a program that lives on the host ---- */
+  {
+    PVM_Word_t top = 0;
+
+    arg[0] = INSTR_PUSH; arg[1] = 9; arg[2] = 0;
+    len = Exchange(&dbg, buf, DBGCMD_EXEC_INSTR, arg, 3);
+    CHECK(ReplyCmd(buf) == DBGCMD_EXEC_INSTR && len == 9 + 5, "EXEC_INSTR runs PUSH and says how it went");
+    CHECK((int8_t)((const uint8_t*)buf)[PAYLOAD_AT] == ERRORCODE_NO_ERROR, "status: no error");
+
+    arg[1] = 4;
+    Exchange(&dbg, buf, DBGCMD_EXEC_INSTR, arg, 3);
+    arg[0] = INSTR_SUB;
+    Exchange(&dbg, buf, DBGCMD_EXEC_INSTR, arg, 1);
+    {
+      const uint8_t* p = (const uint8_t*)buf + PAYLOAD_AT + 1;
+      CHECK((p[0] | (p[1] << 8)) == 1, "and reports SP after it: 9 4 SUB leaves one word");
+    }
+    CHECK(PVM_Pop(&vm, &top) == ERRORCODE_NO_ERROR && top == 5, "which is 9 - 4, on the device's own stack");
+
+    arg[0] = INSTR_ADD;
+    Exchange(&dbg, buf, DBGCMD_EXEC_INSTR, arg, 1);
+    CHECK((int8_t)((const uint8_t*)buf)[PAYLOAD_AT] == ERRORCODE_PAIR_STACK,
+          "an execution error comes back as the status, not as silence");
+
+    arg[0] = INSTR_JMP; arg[1] = 0; arg[2] = 0;
+    Exchange(&dbg, buf, DBGCMD_EXEC_INSTR, arg, 3);
+    CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "control flow is the host's job, and is refused");
+    CHECK(PcOf(&vm) == 7 && vm.code_ptr == (uint8_t*)g_code, "the program's own PC and code are untouched");
+
+    Exchange(&dbg, buf, DBGCMD_RUN, 0, 0);
+    arg[0] = INSTR_DUP;
+    Exchange(&dbg, buf, DBGCMD_EXEC_INSTR, arg, 1);
+    CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "and nothing is executed behind a running program's back");
+    Exchange(&dbg, buf, DBGCMD_PAUSE, 0, 0);
+  }
+
   /* ---- the VM keeps to the pool it was given ---- */
   {
     int pushed = 0;

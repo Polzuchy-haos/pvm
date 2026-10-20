@@ -24,6 +24,9 @@ extern "C" {
 int PvmDbgDisasm(const uint8_t* code, int len, int baseAddr, int maxLines,
                  char lines[][PVMDBG_DISASM_LINE_MAX]);
 
+/* 1 or 3 bytes, from the same opcode table; 0 for a byte that is no opcode. */
+int PvmDbgInstrSize(uint8_t opcode);
+
 #ifdef __cplusplus
 }
 #endif

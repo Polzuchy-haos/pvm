@@ -1,0 +1,10 @@
+step
+step
+step
+step
+run
+exec LOAD 0
+call square 0 9
+call square
+reset
+exit

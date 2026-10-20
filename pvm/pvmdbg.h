@@ -37,16 +37,32 @@
  * other commands already need. */
 #define PVMDBG_CFG_CODE_READ_MAX (16)
 
-/* The longest frame either side can send: the 6-byte header, the biggest
- * payload (a count plus one 16-bit item per slot, for whichever of BRKP_LIST
- * and READ_STACK has more slots) and the trailing CRC. The buffer handed to
- * PVMDBG_Poll has to be at least this big -- it carries the reply as well as
- * the request. */
-#define PVMDBG_CFG_ITEM_MAX (PVMDBG_CFG_BRKP_SIZE > PVMDBG_CFG_STACK_READ_MAX ? \
-                             PVMDBG_CFG_BRKP_SIZE : PVMDBG_CFG_STACK_READ_MAX)
-#define PVMDBG_CFG_DATA_MAX (1 + (2 * PVMDBG_CFG_ITEM_MAX > PVMDBG_CFG_CODE_READ_MAX ? \
-                                  2 * PVMDBG_CFG_ITEM_MAX : PVMDBG_CFG_CODE_READ_MAX))
+/* Bytecode the host can upload and run without reflashing (EXEC_WRITE /
+ * EXEC_RUN). It lives in PVMDbg_s, so it costs RAM on the device whether or not
+ * anyone uses it -- 64 bytes is room for a dozen or two instructions, which is
+ * what poking a variable or trying out an expression takes. */
+#define PVMDBG_CFG_EXEC_SIZE (64)
+
+/* HALT bytes kept after the uploaded code: two for the operand of an
+ * instruction cut off at the very end, one for the HALT itself. A snippet can
+ * therefore never run off the end of the buffer, HALT or no HALT. */
+#define PVMDBG_EXEC_PAD (3)
+
+#define PVMDBG_MAX_(a, b) ((a) > (b) ? (a) : (b))
+
+/* The longest payload either side can send, whichever command needs most:
+ * BRKP_LIST (a count plus an address per slot), READ_STACK and EXEC_STATUS
+ * (state, count, then words), or READ_CODE (a count plus bytes). The frame adds
+ * the 7-byte header and the 2-byte CRC. The buffer handed to PVMDBG_Poll has to
+ * be at least PVMDBG_CFG_BUF_SIZE -- it carries the reply as well as the
+ * request. */
+#define PVMDBG_CFG_DATA_MAX PVMDBG_MAX_(PVMDBG_MAX_(1 + 2 * PVMDBG_CFG_BRKP_SIZE,      \
+                                                    2 + 2 * PVMDBG_CFG_STACK_READ_MAX), \
+                                        1 + PVMDBG_CFG_CODE_READ_MAX)
 #define PVMDBG_CFG_BUF_SIZE (7 + PVMDBG_CFG_DATA_MAX + 2)
+
+/* Bytes of bytecode one EXEC_WRITE carries, after its one-byte offset. */
+#define PVMDBG_EXEC_CHUNK_MAX (PVMDBG_CFG_DATA_MAX - 1)
 
 typedef struct PVMDbg_s PVMDbg_s;
 typedef struct PVMDbgFrame_s PVMDbgFrame_s;
@@ -66,6 +82,15 @@ enum PVMDbgStop_e{
   DBGSTOP_STEP       = 2, /* the single instruction STEP allows has been run */
   DBGSTOP_BREAKPOINT = 3,
   DBGSTOP_HALTED     = 4, /* PC is on a HALT: the program is over */
+  DBGSTOP_EXEC_DONE  = 5, /* the uploaded snippet reached its HALT; the program is back */
+};
+
+/* Where the uploaded snippet is at, reported by EXEC_STATUS. */
+enum PVMDbgExec_e{
+  DBGEXEC_IDLE    = 0, /* nothing has been run since the agent started */
+  DBGEXEC_ACTIVE  = 1, /* the VM is executing the buffer, not the program */
+  DBGEXEC_DONE    = 2, /* reached HALT; whatever it left on the stack was kept */
+  DBGEXEC_ABORTED = 3, /* EXEC_ABORT or RESET dropped it before it finished */
 };
 
 struct PVMDbg_s{
@@ -74,6 +99,19 @@ struct PVMDbg_s{
   uint8_t  mode;   /* PVMDbgMode_e */
   uint8_t  reason; /* PVMDbgStop_e */
   uint8_t  resume; /* step over the breakpoint PC is sitting on -- see the .c */
+
+  /* ---- running uploaded code, see EXEC_RUN in the .c ---- */
+  uint8_t    exec_code[PVMDBG_CFG_EXEC_SIZE + PVMDBG_EXEC_PAD];
+  uint8_t    exec_state;  /* PVMDbgExec_e */
+  uint8_t    exec_count;  /* words in exec_result */
+  PVM_Word_t exec_result[PVMDBG_CFG_STACK_READ_MAX]; /* top of stack first */
+
+  /* The program's context while the snippet borrows the VM. */
+  uint8_t*    saved_code_ptr;
+  uint16_t    saved_code_len;
+  uint8_t*    saved_PC;
+  PVM_Word_t* saved_SP;
+  PVM_Word_t* saved_FP;
 };
 
 /*
@@ -99,7 +137,7 @@ struct PVMDbgFrame_s{
 enum PVMDbgCmd_e{
   DBGCMD_NONE      = 0x00, /* nothing pending -- PVMDBG_Poll saw no frame */
   DBGCMD_PING      = 0x01, /* anyone there, and is the framing still in sync */
-  DBGCMD_STATE     = 0x02, /* PC/SP/FP, plus whether the VM is currently stopped */
+  DBGCMD_STATE     = 0x02, /* PC/SP/FP, whether the VM is stopped, whether it is in a snippet */
   DBGCMD_READ_STACK= 0x03, /* the top N words -- stepping a stack machine blind is no use */
   /* Bytecode straight from the device, so the host can disassemble what is
    * actually running rather than trust a local copy that may be out of date --
@@ -122,6 +160,25 @@ enum PVMDbgCmd_e{
   DBGCMD_BRKP_SET  = 0x20, /* arm a breakpoint at a code address */
   DBGCMD_BRKP_CLR  = 0x21, /* disarm one */
   DBGCMD_BRKP_LIST = 0x22, /* which addresses are armed right now */
+
+  /* Running code the host uploads, without reflashing the program. The snippet
+   * runs on the program's own stack, RAM, user section and SVCs, so it can read
+   * and change them; when it reaches HALT the program's PC, SP and FP are put
+   * back and it carries on as if nothing had happened -- except for whatever the
+   * snippet deliberately changed. */
+  DBGCMD_EXEC_WRITE  = 0x30, /* offset (1 byte), then bytecode for the buffer */
+  DBGCMD_EXEC_RUN    = 0x31, /* length (1 byte): switch the VM to the buffer and run it */
+  DBGCMD_EXEC_STATUS = 0x32, /* PVMDbgExec_e, then what the snippet left on the stack */
+  DBGCMD_EXEC_ABORT  = 0x33, /* drop a snippet that has not finished, back to the program */
+
+  /* One instruction (opcode plus operand, 1 or 3 bytes), executed on the spot
+   * inside PVMDBG_Poll; the reply is the status PVM_ExecTick returned (1 byte,
+   * signed), then SP and FP as stack depths. This is the device half of running
+   * a program that lives on the host: the host fetches, decodes and does all the
+   * control flow -- JMP/JZ/JNZ/CALL/RET/HALT, which are refused here because
+   * their addresses mean nothing on the device -- and the device does the work
+   * on its own stack, RAM, peripherals and SVCs. Only while stopped. */
+  DBGCMD_EXEC_INSTR  = 0x34,
 
   /* Only ever sent by the device, in place of the command it could not carry
    * out (unknown code, address past the end of the program, breakpoint table

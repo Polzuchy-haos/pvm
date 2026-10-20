@@ -3,6 +3,8 @@ add_library(pvmcore STATIC
 	pvm.h
 	pvmdbg.c
 	pvmdbg.h
+	pvmprint.c
+	pvmprint.h
 )
 
 target_include_directories(pvmcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -68,6 +68,7 @@ add_custom_target(pvm_publish_extras ALL
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 					${CMAKE_SOURCE_DIR}/pvm/pvm.c ${CMAKE_SOURCE_DIR}/pvm/pvm.h
 					${CMAKE_SOURCE_DIR}/pvm/pvmdbg.c ${CMAKE_SOURCE_DIR}/pvm/pvmdbg.h
+					${CMAKE_SOURCE_DIR}/pvm/pvmprint.c ${CMAKE_SOURCE_DIR}/pvm/pvmprint.h
 					${PVM_RELEASE_DIR}/pvm
 
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -114,6 +115,26 @@ add_test(NAME run_pvmdbg_session COMMAND ${CMAKE_COMMAND}
 	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
 	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/smoke_session.txt
 	-P ${CMAKE_SOURCE_DIR}/debugger/run_session.cmake)
+
+# The program kept on the host, the VM only executing what it is sent.
+add_test(NAME run_pvmdbg_host COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/host_session.txt
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_host_session.cmake)
+
+# Over TCP, against pvmboard -- see run_tcp_session.cmake. The ports are fixed
+# and unlikely to be taken; two, because each pvmboard serves one session.
+add_test(NAME run_pvmdbg_tcp COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBOARD=$<TARGET_FILE:pvmboard>
+	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
+	-DMAP=${CMAKE_BINARY_DIR}/bytecode/square.dbgmap
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/tcp_session.txt
+	-DHOST_SESSION=${CMAKE_SOURCE_DIR}/debugger/host_session.txt
+	-DPORT=47021
+	-DWORK=${CMAKE_CURRENT_BINARY_DIR}
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_tcp_session.cmake)
 
 # The same tool in the mode the VS Code extension drives it in.
 add_test(NAME run_pvmdbg_machine COMMAND ${CMAKE_COMMAND}

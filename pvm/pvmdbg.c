@@ -40,6 +40,13 @@ static int 			_BrkpClr(PVMDbg_s* dbg, uint8_t* frame, uint16_t addr);
 static int 			_BrkpList(PVMDbg_s* dbg, uint8_t* frame);
 static int 			_ReadStack(PVMDbg_s* dbg, uint8_t* frame, int count);
 static int 			_ReadCode(PVMDbg_s* dbg, uint8_t* frame, int addr, int count);
+static int 			_ExecWrite(PVMDbg_s* dbg, uint8_t* frame, const uint8_t* data, int dataLen);
+static int 			_ExecRun(PVMDbg_s* dbg, uint8_t* frame, int len);
+static int 			_ExecStatus(PVMDbg_s* dbg, uint8_t* frame);
+static int 			_ExecInstr(PVMDbg_s* dbg, uint8_t* frame, const uint8_t* data, int dataLen);
+static void 		_ExecLeave(PVMDbg_s* dbg, uint8_t outcome);
+static uint8_t* _ProgCode(PVMDbg_s* dbg);
+static uint16_t _ProgLen(PVMDbg_s* dbg);
 
 
 void PVMDBG_Init(PVMDbg_s* dbg, PVM_State_s* state){
@@ -49,6 +56,9 @@ void PVMDBG_Init(PVMDbg_s* dbg, PVM_State_s* state){
   dbg->mode   = DBGMODE_RUNNING;
   dbg->reason = DBGSTOP_NONE;
   dbg->resume = 0;
+
+  dbg->exec_state = DBGEXEC_IDLE;
+  dbg->exec_count = 0;
 
   for(int i = 0; i < PVMDBG_CFG_BRKP_SIZE; i++)
     dbg->brkp[i] = 0;
@@ -62,6 +72,16 @@ int PVMDBG_IsAccessExecTick(PVMDbg_s* dbg){
    * forever, so the program ending is treated as a reason to stop. PC is left
    * sitting on the HALT, which is exactly where a debugger wants to show it. */
   if(*dbg->state->PC == INSTR_HALT){
+    /* The HALT that ends a snippet is not the end of the program: put the
+     * program back where it was and stop there, so the host sees the snippet
+     * finish and the program it interrupted in one and the same STATE. */
+    if(dbg->exec_state == DBGEXEC_ACTIVE){
+      _ExecLeave(dbg, DBGEXEC_DONE);
+      dbg->mode 	= DBGMODE_STOPPED;
+      dbg->reason = DBGSTOP_EXEC_DONE;
+      return 0;
+    }
+
     dbg->mode 	= DBGMODE_STOPPED;
     dbg->reason = DBGSTOP_HALTED;
     return 0;
@@ -179,7 +199,11 @@ static int _Dispatch(PVMDbg_s* dbg, uint8_t* frame, uint16_t cmd,
     _Put16(out + 4, (uint16_t)(dbg->state->FP - dbg->state->stack));
     out[6] = dbg->mode;
     out[7] = dbg->reason;
-    return _Reply(frame, cmd, 8);
+    /* Appended rather than slotted in, so a host that only knows the first
+     * eight bytes goes on reading them exactly as before. While it is set, PC
+     * is an offset into the snippet, not the program. */
+    out[8] = (dbg->exec_state == DBGEXEC_ACTIVE);
+    return _Reply(frame, cmd, 9);
 
   case DBGCMD_MEM_INFO:
     _Put16(out + 0, dbg->state->stack_len);
@@ -203,6 +227,10 @@ static int _Dispatch(PVMDbg_s* dbg, uint8_t* frame, uint16_t cmd,
     return _Reply(frame, cmd, 0);
 
   case DBGCMD_RESET:
+    /* "Back to the start" means the program's start, not the snippet's. */
+    if(dbg->exec_state == DBGEXEC_ACTIVE)
+      _ExecLeave(dbg, DBGEXEC_ABORTED);
+
     dbg->state->PC = dbg->state->code_ptr;
     dbg->state->SP = dbg->state->stack;
     dbg->state->FP = dbg->state->stack;
@@ -228,16 +256,38 @@ static int _Dispatch(PVMDbg_s* dbg, uint8_t* frame, uint16_t cmd,
   case DBGCMD_BRKP_LIST:
     return _BrkpList(dbg, frame);
 
+  case DBGCMD_EXEC_WRITE:
+    return _ExecWrite(dbg, frame, data, dataLen);
+
+  case DBGCMD_EXEC_RUN:
+    if(dataLen < 1) return _Reply(frame, DBGCMD_ERROR, 0);
+    return _ExecRun(dbg, frame, data[0]);
+
+  case DBGCMD_EXEC_STATUS:
+    return _ExecStatus(dbg, frame);
+
+  case DBGCMD_EXEC_INSTR:
+    return _ExecInstr(dbg, frame, data, dataLen);
+
+  /* Like BRKP_CLR, asking for a state that already holds is not an error. */
+  case DBGCMD_EXEC_ABORT:
+    if(dbg->exec_state == DBGEXEC_ACTIVE){
+      _ExecLeave(dbg, DBGEXEC_ABORTED);
+      dbg->mode 	= DBGMODE_STOPPED;
+      dbg->reason = DBGSTOP_HOST;
+    }
+    return _Reply(frame, cmd, 0);
+
   default:
     return _Reply(frame, DBGCMD_ERROR, 0);
   }
 }
 
 static int _BrkpSet(PVMDbg_s* dbg, uint8_t* frame, uint16_t addr){
-  uint8_t* target = dbg->state->code_ptr + addr;
+  uint8_t* target = _ProgCode(dbg) + addr;
   int 		 slot 	= -1;
 
-  if(addr >= dbg->state->code_len)
+  if(addr >= _ProgLen(dbg))
     return _Reply(frame, DBGCMD_ERROR, 0);
 
   for(int i = 0; i < PVMDBG_CFG_BRKP_SIZE; i++){
@@ -256,7 +306,7 @@ static int _BrkpSet(PVMDbg_s* dbg, uint8_t* frame, uint16_t addr){
  * a state, and that state already holds -- which is what makes "clear them all"
  * on the host side a plain loop rather than a special case. */
 static int _BrkpClr(PVMDbg_s* dbg, uint8_t* frame, uint16_t addr){
-  uint8_t* target = dbg->state->code_ptr + addr;
+  uint8_t* target = _ProgCode(dbg) + addr;
 
   for(int i = 0; i < PVMDBG_CFG_BRKP_SIZE; i++)
     if(dbg->brkp[i] == target)
@@ -272,7 +322,7 @@ static int _BrkpList(PVMDbg_s* dbg, uint8_t* frame){
   for(int i = 0; i < PVMDBG_CFG_BRKP_SIZE; i++){
     if(dbg->brkp[i] == 0) continue;
 
-    _Put16(data + 1 + 2 * n, (uint16_t)(dbg->brkp[i] - dbg->state->code_ptr));
+    _Put16(data + 1 + 2 * n, (uint16_t)(dbg->brkp[i] - _ProgCode(dbg)));
     n++;
   }
 
@@ -318,6 +368,178 @@ static int _ReadCode(PVMDbg_s* dbg, uint8_t* frame, int addr, int count){
 
   out[0] = (uint8_t)n;
   return _Reply(frame, DBGCMD_READ_CODE, 1 + n);
+}
+
+/* ---- running uploaded code -------------------------------------------- */
+
+/* Breakpoint addresses always mean the program, also while a snippet has the
+ * VM: the host sets them from a listing or a source line of the program. */
+static uint8_t* _ProgCode(PVMDbg_s* dbg){
+  return (dbg->exec_state == DBGEXEC_ACTIVE) ? dbg->saved_code_ptr : dbg->state->code_ptr;
+}
+
+static uint16_t _ProgLen(PVMDbg_s* dbg){
+  return (dbg->exec_state == DBGEXEC_ACTIVE) ? dbg->saved_code_len : dbg->state->code_len;
+}
+
+/* Uploaded in pieces because a frame carries a few dozen bytes at most, and
+ * the buffer is bigger than that. Rewriting the buffer under a snippet that is
+ * still running would change the code beneath its PC, so that is refused. */
+static int _ExecWrite(PVMDbg_s* dbg, uint8_t* frame, const uint8_t* data, int dataLen){
+  int offset, n;
+
+  if(dataLen < 1 || dbg->exec_state == DBGEXEC_ACTIVE)
+    return _Reply(frame, DBGCMD_ERROR, 0);
+
+  offset = data[0];
+  n 		 = dataLen - 1;
+
+  if(offset + n > PVMDBG_CFG_EXEC_SIZE)
+    return _Reply(frame, DBGCMD_ERROR, 0);
+
+  for(int i = 0; i < n; i++)
+    dbg->exec_code[offset + i] = data[1 + i];
+
+  return _Reply(frame, DBGCMD_EXEC_WRITE, 0);
+}
+
+/*
+ * The VM is pointed at the buffer instead of the program -- code_ptr, code_len
+ * and PC are all it executes from, so nothing in pvm.c has to know -- and set
+ * running. Only from a stopped VM: the host should know where the program was
+ * interrupted, and gets to see it again once the snippet is done.
+ *
+ * Every byte after the snippet is HALT, and code_len covers one of them, so a
+ * snippet needs no HALT of its own and a jump to its very end is a jump to the
+ * finish rather than a bad address.
+ */
+static int _ExecRun(PVMDbg_s* dbg, uint8_t* frame, int len){
+  PVM_State_s* vm = dbg->state;
+
+  if(len < 1 || len > PVMDBG_CFG_EXEC_SIZE ||
+     dbg->exec_state == DBGEXEC_ACTIVE || dbg->mode != DBGMODE_STOPPED)
+    return _Reply(frame, DBGCMD_ERROR, 0);
+
+  for(int i = len; i < PVMDBG_CFG_EXEC_SIZE + PVMDBG_EXEC_PAD; i++)
+    dbg->exec_code[i] = INSTR_HALT;
+
+  dbg->saved_code_ptr = vm->code_ptr;
+  dbg->saved_code_len = vm->code_len;
+  dbg->saved_PC 			= vm->PC;
+  dbg->saved_SP 			= vm->SP;
+  dbg->saved_FP 			= vm->FP;
+
+  vm->code_ptr = dbg->exec_code;
+  vm->code_len = (uint16_t)(len + 1);
+  vm->PC 			 = dbg->exec_code;
+
+  dbg->exec_state = DBGEXEC_ACTIVE;
+  dbg->exec_count = 0;
+  dbg->mode 			= DBGMODE_RUNNING;
+  dbg->reason 		= DBGSTOP_NONE;
+  dbg->resume 		= 0;
+
+  return _Reply(frame, DBGCMD_EXEC_RUN, 0);
+}
+
+/* Same shape as READ_STACK's reply with the state in front: the words are what
+ * the snippet left above the stack it started on, top first. */
+static int _ExecStatus(PVMDbg_s* dbg, uint8_t* frame){
+  uint8_t* out = frame + HDR_SIZE;
+
+  out[0] = dbg->exec_state;
+  out[1] = dbg->exec_count;
+
+  for(int i = 0; i < dbg->exec_count; i++)
+    _Put16(out + 2 + 2 * i, (uint16_t)dbg->exec_result[i]);
+
+  return _Reply(frame, DBGCMD_EXEC_STATUS, 2 + 2 * dbg->exec_count);
+}
+
+/*
+ * Runs one instruction the host sent, right now rather than on a later turn of
+ * the main loop, so the reply can say how it went -- the only way an execution
+ * error ever reaches the host. The VM is pointed at the instruction for exactly
+ * one PVM_ExecTick and then back at whatever it was executing before, so the
+ * flashed program (if there is one) is not disturbed, only the data it shares.
+ *
+ * Control flow is refused: a jump target is a program address, and the program
+ * lives on the host, which follows jumps itself. Refusing them here is what
+ * stops a host bug from sending the VM into the weeds.
+ */
+static int _ExecInstr(PVMDbg_s* dbg, uint8_t* frame, const uint8_t* data, int dataLen){
+  PVM_State_s* vm  = dbg->state;
+  uint8_t* 		 out = frame + HDR_SIZE;
+  uint8_t* 		 codePtr;
+  uint16_t 		 codeLen;
+  uint8_t* 		 pc;
+  int 				 status;
+
+  if(dataLen < 1 || dataLen > 3 ||
+     dbg->mode != DBGMODE_STOPPED || dbg->exec_state == DBGEXEC_ACTIVE)
+    return _Reply(frame, DBGCMD_ERROR, 0);
+
+  switch(data[0]){
+  case INSTR_JMP: case INSTR_JZ: case INSTR_JNZ:
+  case INSTR_CALL: case INSTR_RET: case INSTR_HALT:
+    return _Reply(frame, DBGCMD_ERROR, 0);
+  default:
+    break;
+  }
+
+  /* The snippet buffer is idle (checked above), so it doubles as the place to
+   * run from; HALT after the instruction covers an operand the host cut short. */
+  for(int i = 0; i < PVMDBG_EXEC_PAD + 1; i++)
+    dbg->exec_code[i] = (i < dataLen) ? data[i] : INSTR_HALT;
+
+  codePtr = vm->code_ptr;
+  codeLen = vm->code_len;
+  pc 			= vm->PC;
+
+  vm->code_ptr = dbg->exec_code;
+  vm->code_len = (uint16_t)dataLen;
+  vm->PC 			 = dbg->exec_code;
+
+  status = PVM_ExecTick(vm);
+
+  vm->code_ptr = codePtr;
+  vm->code_len = codeLen;
+  vm->PC 			 = pc;
+
+  out[0] = (uint8_t)(int8_t)status;
+  _Put16(out + 1, (uint16_t)(vm->SP - vm->stack));
+  _Put16(out + 3, (uint16_t)(vm->FP - vm->stack));
+  return _Reply(frame, DBGCMD_EXEC_INSTR, 5);
+}
+
+/*
+ * Hands the VM back to the program. What a finished snippet pushed is copied
+ * out first, since putting SP back is about to make it unreachable -- that is
+ * how a snippet answers a question ("LOAD 3" and the host reads the value).
+ * Anything it wrote to RAM, the user section or below its starting SP stays
+ * written: changing the program's data on the fly is the point.
+ */
+static void _ExecLeave(PVMDbg_s* dbg, uint8_t outcome){
+  PVM_State_s* vm = dbg->state;
+  int 				 n 	= 0;
+
+  if(outcome == DBGEXEC_DONE){
+    n = (int)(vm->SP - dbg->saved_SP);
+    if(n > PVMDBG_CFG_STACK_READ_MAX) n = PVMDBG_CFG_STACK_READ_MAX;
+    if(n < 0) 												n = 0;
+
+    for(int i = 0; i < n; i++)
+      dbg->exec_result[i] = vm->SP[-(i + 1)];
+  }
+
+  vm->code_ptr = dbg->saved_code_ptr;
+  vm->code_len = dbg->saved_code_len;
+  vm->PC 			 = dbg->saved_PC;
+  vm->SP 			 = dbg->saved_SP;
+  vm->FP 			 = dbg->saved_FP;
+
+  dbg->exec_state = outcome;
+  dbg->exec_count = (uint8_t)n;
 }
 
 /* Writes the header around data the caller has already placed at HDR_SIZE, then

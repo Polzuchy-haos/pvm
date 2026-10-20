@@ -12,12 +12,20 @@ add_library(pvmdisasm_lib STATIC
 target_link_libraries(pvmdisasm_lib PUBLIC pvmopcodes)
 target_include_directories(pvmdisasm_lib PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
 
-add_executable(pvmc
-	pvmc.cpp
+# A library rather than a source file of pvmc's: pvmdbg assembles the snippets
+# it runs on the device with exactly the assembler pvmc uses.
+add_library(pvmasm_lib STATIC
 	assembler.cpp
 	assembler.h
 )
-target_link_libraries(pvmc PRIVATE pvmopcodes)
+target_link_libraries(pvmasm_lib PUBLIC pvmopcodes)
+target_include_directories(pvmasm_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(pvmasm_lib PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
+
+add_executable(pvmc
+	pvmc.cpp
+)
+target_link_libraries(pvmc PRIVATE pvmasm_lib)
 target_include_directories(pvmc PRIVATE ${CMAKE_SOURCE_DIR}/pvm)
 
 add_executable(pvmdisasm
