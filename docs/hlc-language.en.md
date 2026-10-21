@@ -263,7 +263,7 @@ void main() {
 ## svc — calling into C
 
 ```c
-svc(1, 42);              // as a statement -- the result is discarded
+svc(0);                  // as a statement -- the result is discarded
 RESULT = svc(2, 3, 4);   // as an expression -- the returned value is used
 ```
 
@@ -276,11 +276,14 @@ contract between the `.hlc` program and the C handler registered through
 `PVM_RegisterSvc` (as in `.pvms`, the compiler simply trusts that the two
 agree). By convention every handler leaves exactly one result on the stack, so
 `svc(...)` always behaves as an ordinary single-valued expression, usable both
-as a statement (`svc(1, 42);`) and inside an expression (`x = svc(2, 3, 4);`).
+as a statement (`svc(0);`) and inside an expression (`x = svc(2, 3, 4);`).
 
-`simulator/pvmenv.c` currently registers `SVC #0` (`Svc_Tick`), `#1`
-(`Svc_Print`) and `#2` (`Svc_Add`) — one particular table shared by the
-simulator and the debugger, not part of the language. For a fuller example of
+`simulator/pvmenv.c` currently registers `SVC #0` (`Svc_Tick`) and `#2`
+(`Svc_Add`); `#1` is free — a board has nowhere to print to, so the simulator
+has no print either: a program shows a result by storing it (the examples use
+the output register at `0x4007`, which shows up in the `pvmsim` trace). That is
+one particular table shared by the simulator and the debugger, not part of the
+language. For a fuller example of
 why `svc` is worth having, see the `lib/time.hlc` library:
 
 - `int Time_GetTick()` — the current tick (a wrapper over `svc(0)`);
@@ -294,7 +297,7 @@ why `svc` is worth having, see the `lib/time.hlc` library:
 See also `example/time_demo.hlc` (which exercises `Time_Elapsed` across the
 wraparound).
 
-See `example/svc_demo.hlc` and the `Svc_Print`/`Svc_Add` handlers in
+See `example/svc_demo.hlc` and the `Svc_Tick`/`Svc_Add` handlers in
 `simulator/pvmenv.c`.
 
 ## Local variables — an important restriction

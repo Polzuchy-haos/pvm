@@ -1,0 +1,8 @@
+state
+step
+step
+stack
+mem
+breaks
+run
+exit

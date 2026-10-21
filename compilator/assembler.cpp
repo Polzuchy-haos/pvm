@@ -6,6 +6,12 @@
  *   - ".import file"  : textually inlines another .pvms file (recursively, cycle-safe)
  *   - ".const NAME V" : named integer constant
  *   - ".line N path"  : ties the next instruction to a line of .hlc source
+ *   - ".func NAME" ... ".endfunc"
+ *                     : the instructions between belong to function NAME, for
+ *                       the debugger's symbols (see GenerateDebugMap)
+ *   - ".param NAME OFFSET" / ".local NAME OFFSET"
+ *                     : a variable of the current function, OFFSET words from
+ *                       FP, there from the next instruction on
  *   - ".var NAME ADDR SIZE"
  *                     : named variable -- resolves like .const, but also carries
  *                       its size into the listing's memory map and gets its whole
@@ -40,6 +46,13 @@ struct Line {
 	int 				lineNo;
 };
 
+/* A ".param" or ".local": where in its function's frame a variable lives. */
+struct FrameVar {
+	std::string kind; /* "param" or "local" */
+	std::string name;
+	int 				offset; /* words from FP */
+};
+
 struct Instr {
 	int 				opcode;
 	bool 				hasOperand;
@@ -54,6 +67,12 @@ struct Instr {
 	bool 				hasDebugLine = false;
 	std::string debugFile;
 	int 				debugLine 	 = 0;
+
+	/* The function it belongs to (an index into funcNames_, -1 for none), and the
+	 * frame variables that exist from this instruction on -- also kept on the
+	 * instruction, for the same reason as the debug line. */
+	int 									func = -1;
+	std::vector<FrameVar> vars;
 };
 
 struct Block {
@@ -196,6 +215,9 @@ private:
 	bool 																havePendingDebug_ = false;
 	std::string 												pendingDebugFile_;
 	int 																pendingDebugLine_ = 0;
+	std::vector<std::string> 						funcNames_;
+	int 																currentFunc_ = -1;
+	std::vector<FrameVar> 							pendingVars_;
 
 	void LoadFile(const std::string& path){
 		fs::path norm 			= fs::absolute(path).lexically_normal();
@@ -264,6 +286,12 @@ private:
 				continue;
 			}
 
+			if(StartsWithDirective(line, ".func") || StartsWithDirective(line, ".endfunc") ||
+				 StartsWithDirective(line, ".param") || StartsWithDirective(line, ".local")){
+				ParseSymbolDirective(l);
+				continue;
+			}
+
 			if(StartsWithDirective(line, ".const")){
 				std::istringstream iss(line.substr(6));
 				std::string name, valtext;
@@ -315,6 +343,9 @@ private:
 				havePendingDebug_ = false;
 			}
 
+			ins.func = currentFunc_;
+			ins.vars.swap(pendingVars_);
+
 			current->instrs.push_back(std::move(ins));
 		}
 	}
@@ -339,6 +370,44 @@ private:
 			throw AssemblerError(Where(l.file, l.lineNo) + "'.line' expects a source file after the number");
 
 		havePendingDebug_ = true;
+	}
+
+	/*
+	 * ".func NAME" / ".endfunc" / ".param NAME OFFSET" / ".local NAME OFFSET" --
+	 * what the debugger needs to put names on a stack frame. They generate no
+	 * code, and a .pvms written by hand need not have any.
+	 */
+	void ParseSymbolDirective(const Line& l){
+		std::istringstream iss(l.text);
+		std::string directive, name, offsetText, extra;
+		int offset;
+
+		iss >> directive;
+
+		if(directive == ".endfunc"){
+			currentFunc_ = -1;
+			pendingVars_.clear(); /* a variable with no instruction after it never exists */
+			return;
+		}
+
+		if(!(iss >> name))
+			throw AssemblerError(Where(l.file, l.lineNo) + "'" + directive + "' expects a name");
+
+		if(directive == ".func"){
+			funcNames_.push_back(name);
+			currentFunc_ = (int)funcNames_.size() - 1;
+			pendingVars_.clear();
+			return;
+		}
+
+		if(currentFunc_ < 0)
+			throw AssemblerError(Where(l.file, l.lineNo) + "'" + directive + "' outside a .func");
+		if(!(iss >> offsetText) || !ParseNumber(offsetText, &offset))
+			throw AssemblerError(Where(l.file, l.lineNo) + "'" + directive + "' expects NAME OFFSET");
+		if(iss >> extra)
+			throw AssemblerError(Where(l.file, l.lineNo) + "unexpected '" + extra + "' after '" + directive + "'");
+
+		pendingVars_.push_back(FrameVar{directive.substr(1), name, offset});
 	}
 
 	/* ".var NAME ADDR SIZE" -- a variable rather than a bare number, so the
@@ -682,6 +751,43 @@ private:
 			for(const Instr& ins : b.instrs)
 				if(ins.hasDebugLine)
 					out << Hex4(ins.address) << " " << ins.debugFile << ":" << ins.debugLine << "\n";
+
+		/*
+		 * Symbols, after the line entries. Every record starts with '@', which no
+		 * reader of the line entries takes for an address -- they look for "0x"
+		 * or a hex number -- so a map with symbols still reads as before.
+		 *
+		 *   @func   0xSTART 0xEND NAME          [START, END) belongs to NAME; a
+		 *                                       function moved by .entry may have
+		 *                                       more than one such range
+		 *   @var    FUNC KIND NAME OFFSET 0xADDR
+		 *                                       KIND param|local, OFFSET words from
+		 *                                       FP, there from instruction ADDR on
+		 *   @global NAME 0xADDR SIZE            a .var: data address, size in words
+		 */
+		int runFunc = -1, runStart = 0, end = 0;
+
+		for(const Block& b : blocks_)
+			for(const Instr& ins : b.instrs){
+				if(ins.func != runFunc){
+					if(runFunc >= 0)
+						out << "@func " << Hex4(runStart) << " " << Hex4(ins.address) << " " << funcNames_[runFunc] << "\n";
+					runFunc  = ins.func;
+					runStart = ins.address;
+				}
+				end = ins.address + (ins.hasOperand ? 3 : 1);
+			}
+		if(runFunc >= 0)
+			out << "@func " << Hex4(runStart) << " " << Hex4(end) << " " << funcNames_[runFunc] << "\n";
+
+		for(const Block& b : blocks_)
+			for(const Instr& ins : b.instrs)
+				for(const FrameVar& v : ins.vars)
+					out << "@var " << funcNames_[ins.func] << " " << v.kind << " " << v.name << " "
+							<< v.offset << " " << Hex4(ins.address) << "\n";
+
+		for(const Var& v : vars_)
+			out << "@global " << v.name << " " << Hex4(v.address) << " " << v.size << "\n";
 
 		return out.str();
 	}

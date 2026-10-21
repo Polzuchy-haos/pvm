@@ -42,6 +42,11 @@
   дизассемблер. Общается со «стороной устройства» (`pvm/pvmdbg.c`,
   компилируется в прошивку) кадрами протокола, см.
   [`docs/debugger.md`](docs/debugger.md).
+- [`pvminit/`](pvminit/) — `pvminit`: генератор сборочных и отладочных
+  скриптов. Создаёт для своего проекта на `.hlc` готовый `Makefile` и
+  `.vscode/` (`make run`, `make debug`, F5 в редакторе) с уже подставленными
+  путями до утилит, см.
+  [`docs/project-generator.md`](docs/project-generator.md).
 - [`tools/vscode-pvm/`](tools/vscode-pvm/) — расширение VS Code: подсветка
   синтаксиса и отладка `.hlc` прямо в редакторе (точки останова кликом,
   F5/F10/F11, стек в панели переменных) поверх той же `pvmdbg`.
@@ -54,7 +59,9 @@
 - [`docs/`](docs/) — описания языков и инструментов:
   [`docs/pvms-language.md`](docs/pvms-language.md) (ассемблер),
   [`docs/hlc-language.md`](docs/hlc-language.md) (высокоуровневый язык),
-  [`docs/debugger.md`](docs/debugger.md) (отладчик и его протокол).
+  [`docs/debugger.md`](docs/debugger.md) (отладчик и его протокол),
+  [`docs/project-generator.md`](docs/project-generator.md) (генератор
+  скриптов).
 - [`Release/`](Release/) — папка для раздачи: собранные инструменты, ядро ВМ в
   исходниках, `lib/`, документация и расширение VS Code. Целиком собирается
   `make`-ом и в git не хранится (кроме своего
@@ -91,6 +98,21 @@ pvmcc blink.hlc -o blink.pvms
 pvmc blink.pvms -o blink.bin
 pvmsim blink.bin
 ```
+
+## Свой проект
+
+Чтобы не выписывать эти вызовы руками, свой проект заводится генератором — он
+создаёт `Makefile` и `.vscode/` с уже подставленными путями до утилит:
+
+```
+pvminit myproject --port COM6
+cd myproject
+make run        # собрать и выполнить в симуляторе
+make debug      # пошаговая отладка; в VS Code то же самое по F5
+```
+
+Подробности — в
+[`docs/project-generator.md`](docs/project-generator.md).
 
 Подробнее про оба языка — в [`docs/hlc-language.md`](docs/hlc-language.md) и
 [`docs/pvms-language.md`](docs/pvms-language.md); про сами инструменты — в

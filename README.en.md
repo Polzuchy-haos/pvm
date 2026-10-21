@@ -38,6 +38,10 @@ high-level language that compiles to the same bytecode.
   terminal — stepping, breakpoints on `.hlc` source lines, stack inspection,
   disassembly. It talks to the device side (`pvm/pvmdbg.c`, compiled into the
   firmware) in protocol frames; see [`docs/debugger.en.md`](docs/debugger.en.md).
+- [`pvminit/`](pvminit/) — `pvminit`: the build and debug script generator. It
+  gives a project of your own a ready `Makefile` and `.vscode/` (`make run`,
+  `make debug`, F5 in the editor) with the tool paths already filled in; see
+  [`docs/project-generator.en.md`](docs/project-generator.en.md).
 - [`tools/vscode-pvm/`](tools/vscode-pvm/) — the VS Code extension: syntax
   highlighting and `.hlc` debugging inside the editor (breakpoints in the
   gutter, F5/F10/F11, the VM stack in the variables pane), on top of the same
@@ -49,7 +53,9 @@ high-level language that compiles to the same bytecode.
 - [`docs/`](docs/) — the language and tool manuals:
   [`pvms-language.en.md`](docs/pvms-language.en.md) (assembler),
   [`hlc-language.en.md`](docs/hlc-language.en.md) (high-level language),
-  [`debugger.en.md`](docs/debugger.en.md) (the debugger and its protocol).
+  [`debugger.en.md`](docs/debugger.en.md) (the debugger and its protocol),
+  [`project-generator.en.md`](docs/project-generator.en.md) (the script
+  generator).
 - [`Release/`](Release/) — the folder meant to be handed over: the built tools,
   the VM core in source, `lib/`, the documentation and the VS Code extension.
   It is assembled entirely by `make` and is not kept in git (apart from its own
@@ -86,6 +92,22 @@ pvmcc blink.hlc -o blink.pvms
 pvmc blink.pvms -o blink.bin
 pvmsim blink.bin
 ```
+
+## A project of your own
+
+Rather than writing those calls out by hand, a project of your own is set up by
+the generator, which produces a `Makefile` and a `.vscode/` with the tool paths
+already filled in:
+
+```
+pvminit myproject --port COM6
+cd myproject
+make run        # build it and run it in the simulator
+make debug      # step through it; F5 in VS Code does the same
+```
+
+The details are in
+[`docs/project-generator.en.md`](docs/project-generator.en.md).
 
 For more on the two languages see [`docs/hlc-language.en.md`](docs/hlc-language.en.md)
 and [`docs/pvms-language.en.md`](docs/pvms-language.en.md); for the tools

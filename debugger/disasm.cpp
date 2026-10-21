@@ -1,8 +1,8 @@
 /*
  * disasm.cpp
  *
- * The one C++ file in the debugger, and only because the disassembler it reuses
- * is written in C++. Everything it exposes is plain C (see disasm.h), so the
+ * C++ only because the disassembler it reuses is written in C++ (asm.cpp is the
+ * same for the assembler). Everything it exposes is plain C (see disasm.h), so the
  * session itself stays a C program.
  */
 #include "disasm.h"
@@ -40,4 +40,11 @@ int PvmDbgDisasm(const uint8_t* code, int len, int baseAddr, int maxLines,
 	}
 
 	return written;
+}
+
+int PvmDbgInstrSize(uint8_t opcode){
+	const OpcodeInfo* info = FindOpcodeByValue(opcode);
+
+	if(!info) return 0;
+	return info->hasOperand ? 3 : 1;
 }

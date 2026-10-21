@@ -3,6 +3,7 @@ step
 state
 stack 2
 code 0 4
+mem
 no-such-command
 run
 poll

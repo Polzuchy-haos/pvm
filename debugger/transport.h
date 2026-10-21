@@ -36,9 +36,16 @@ struct Transport_s{
 	char description[128];
 };
 
-/* Both return null, having explained why on stderr, if they cannot start. */
+/* All return null, having explained why on stderr, if they cannot start. */
 Transport_s* TransportLocalOpen(const char* bytecodePath);
-Transport_s* TransportSerialOpen(const char* portName);
+/* 8N1 at `baud`; PVMDBG_DEFAULT_BAUD is what the board projects here use. */
+#define PVMDBG_DEFAULT_BAUD (9600)
+Transport_s* TransportSerialOpen(const char* portName, int baud);
+
+/* "host:port", or "port" alone for this machine. The frames are exactly the
+ * serial port's, so whatever listens there may be a plain byte bridge to a
+ * board's UART. */
+Transport_s* TransportTcpOpen(const char* address);
 
 /* Set by the session's Ctrl+C handler. Transports check it so that a long run,
  * or a board that has stopped answering, can be given up on. */

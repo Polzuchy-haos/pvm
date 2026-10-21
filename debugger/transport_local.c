@@ -30,6 +30,11 @@
 /* clock() costs far more than an instruction does, so it is consulted rarely. */
 #define TICKS_BETWEEN_CLOCK_CHECKS (1024)
 
+/* The VM's pools, static like they would be in firmware. One process opens one
+ * local transport, so there is nobody to share them with. */
+static PVM_Word_t g_stack[PVM_CFG_STACK_SIZE];
+static PVM_Word_t g_ram[PVM_CFG_RAM_SIZE];
+
 typedef struct{
 	Transport_s base;
 	PVM_State_s vm;
@@ -131,8 +136,13 @@ Transport_s* TransportLocalOpen(const char* bytecodePath){
 	snprintf(local->base.description, sizeof(local->base.description),
 					 "'%s', %d bytes of bytecode, running in this process", bytecodePath, len);
 
-	PVM_Init(&local->vm, code, len);
-	PVMENV_Attach(&local->vm, "pvmdbg");
+	if(PVM_Init(&local->vm, code, len, g_stack, PVM_CFG_STACK_SIZE,
+							g_ram, PVM_CFG_RAM_SIZE) != ERRORCODE_NO_ERROR){
+		fprintf(stderr, "pvmdbg: cannot set up the VM's stack and RAM\n");
+		LocalClose(&local->base);
+		return 0;
+	}
+	PVMENV_Attach(&local->vm);
 	PVMDBG_Init(&local->dbg, &local->vm);
 
 	return &local->base;

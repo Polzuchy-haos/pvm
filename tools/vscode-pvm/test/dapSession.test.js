@@ -158,18 +158,27 @@ async function main() {
 	stack = await dap.request('stackTrace', { threadId: 1 });
 	check(stack.body.stackFrames[0].line === 8,
 		`and stops on the line asked for, got ${stack.body.stackFrames[0].line}`);
+	check(stack.body.stackFrames.length === 2, `the call stack is square and main, got ${stack.body.stackFrames.length} frame(s)`);
+	check(/^square/.test(stack.body.stackFrames[0].name), `frame 0 is named after its function, got '${stack.body.stackFrames[0].name}'`);
+	check(stack.body.stackFrames[1] && stack.body.stackFrames[1].line === 12,
+		'frame 1 is main, on the line that called square');
 
 	const scopes = await dap.request('scopes', { frameId: 1 });
-	check(scopes.body.scopes.length === 2, 'Registers and Stack are offered');
+	const scope = (name) => scopes.body.scopes.find((s) => s.name === name);
+	check(['Locals', 'Globals', 'Registers', 'Stack'].every((name) => scope(name)),
+		`Locals, Globals, Registers and Stack are offered, got ${scopes.body.scopes.map((s) => s.name).join(', ')}`);
 
-	const registers = await dap.request('variables', {
-		variablesReference: scopes.body.scopes[0].variablesReference
-	});
+	const locals = await dap.request('variables', { variablesReference: scope('Locals').variablesReference });
+	const x = locals.body.variables.find((v) => v.name === 'x');
+	check(x && x.value === '7', `Locals shows square's parameter x = 7, got ${x ? x.value : 'nothing'}`);
+
+	const globals = await dap.request('variables', { variablesReference: scope('Globals').variablesReference });
+	check(globals.body.variables.some((v) => v.name === 'RESULT'), 'Globals shows RESULT');
+
+	const registers = await dap.request('variables', { variablesReference: scope('Registers').variablesReference });
 	check(registers.body.variables.some((v) => v.name === 'pc'), 'Registers shows the program counter');
 
-	const stackVars = await dap.request('variables', {
-		variablesReference: scopes.body.scopes[1].variablesReference
-	});
+	const stackVars = await dap.request('variables', { variablesReference: scope('Stack').variablesReference });
 	check(stackVars.body.variables.length > 0, 'Stack shows what is on the VM stack');
 
 	/* Stepping is by source line: one instruction would usually leave the

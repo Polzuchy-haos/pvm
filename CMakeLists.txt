@@ -68,6 +68,7 @@ add_custom_target(pvm_publish_extras ALL
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 					${CMAKE_SOURCE_DIR}/pvm/pvm.c ${CMAKE_SOURCE_DIR}/pvm/pvm.h
 					${CMAKE_SOURCE_DIR}/pvm/pvmdbg.c ${CMAKE_SOURCE_DIR}/pvm/pvmdbg.h
+					${CMAKE_SOURCE_DIR}/pvm/pvmprint.c ${CMAKE_SOURCE_DIR}/pvm/pvmprint.h
 					${PVM_RELEASE_DIR}/pvm
 
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -101,6 +102,7 @@ add_subdirectory(hlc)
 add_subdirectory(compilator)
 add_subdirectory(simulator)
 add_subdirectory(debugger)
+add_subdirectory(pvminit)
 
 enable_testing()
 
@@ -114,6 +116,33 @@ add_test(NAME run_pvmdbg_session COMMAND ${CMAKE_COMMAND}
 	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
 	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/smoke_session.txt
 	-P ${CMAKE_SOURCE_DIR}/debugger/run_session.cmake)
+
+# The program kept on the host, the VM only executing what it is sent.
+add_test(NAME run_pvmdbg_host COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/host_session.txt
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_host_session.cmake)
+
+# Over TCP, against pvmboard -- see run_tcp_session.cmake. The ports are fixed
+# and unlikely to be taken; two, because each pvmboard serves one session.
+add_test(NAME run_pvmdbg_tcp COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBOARD=$<TARGET_FILE:pvmboard>
+	-DBIN=${PVM_HLC_SQUARE_BYTECODE}
+	-DMAP=${CMAKE_BINARY_DIR}/bytecode/square.dbgmap
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/tcp_session.txt
+	-DHOST_SESSION=${CMAKE_SOURCE_DIR}/debugger/host_session.txt
+	-DPORT=47021
+	-DWORK=${CMAKE_CURRENT_BINARY_DIR}
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_tcp_session.cmake)
+
+# Variables by name -- the debug map's symbols, read back as a call stack.
+add_test(NAME run_pvmdbg_vars COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBIN=${PVM_HLC_ARRLOGIC_BYTECODE}
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/vars_session.txt
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_vars_session.cmake)
 
 # The same tool in the mode the VS Code extension drives it in.
 add_test(NAME run_pvmdbg_machine COMMAND ${CMAKE_COMMAND}
@@ -135,6 +164,27 @@ else()
 	message(STATUS "node not found -- skipping the VS Code adapter test")
 endif()
 
+# pvminit generates a project, and the test builds and runs that project with
+# make -- the only way to find out that what it writes still works. Skipped
+# where make is missing, which is possible on Windows even though everything
+# else here builds.
+find_program(PVM_MAKE NAMES make mingw32-make gmake)
+if(PVM_MAKE)
+	add_test(NAME run_pvminit_generated COMMAND ${CMAKE_COMMAND}
+		-DPVMINIT=$<TARGET_FILE:pvminit>
+		-DMAKE=${PVM_MAKE}
+		-DPVMCC=$<TARGET_FILE:pvmcc>
+		-DPVMC=$<TARGET_FILE:pvmc>
+		-DPVMSIM=$<TARGET_FILE:pvmsim>
+		-DPVMDISASM=$<TARGET_FILE:pvmdisasm>
+		-DTOOLS=${PVM_RELEASE_DIR}
+		-DWORK=${CMAKE_BINARY_DIR}/pvminit_test
+		-P ${CMAKE_SOURCE_DIR}/pvminit/run_generated.cmake)
+	set_tests_properties(run_pvminit_generated PROPERTIES PASS_REGULAR_EXPRESSION "GENERATED PROJECT OK")
+else()
+	message(STATUS "make not found -- skipping the pvminit test")
+endif()
+
 add_test(NAME run_bytecode_listing COMMAND $<TARGET_FILE:pvmsim> ${PVM_EXAMPLE_BYTECODE})
 set_tests_properties(run_bytecode_listing PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
@@ -145,7 +195,7 @@ add_test(NAME run_test_frame_pointer COMMAND $<TARGET_FILE:pvmsim> ${PVM_TESTFP_
 set_tests_properties(run_test_frame_pointer PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
 add_test(NAME run_test_svc COMMAND $<TARGET_FILE:pvmsim> ${PVM_TESTSVC_BYTECODE})
-set_tests_properties(run_test_svc PROPERTIES PASS_REGULAR_EXPRESSION "SVC print -> 42")
+set_tests_properties(run_test_svc PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 7")
 
 add_test(NAME run_hlc_square COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SQUARE_BYTECODE})
 set_tests_properties(run_hlc_square PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
@@ -160,7 +210,7 @@ add_test(NAME run_hlc_import_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_IMPORT
 set_tests_properties(run_hlc_import_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
 add_test(NAME run_hlc_svc_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SVCDEMO_BYTECODE})
-set_tests_properties(run_hlc_svc_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 42")
+set_tests_properties(run_hlc_svc_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x0 -> 7")
 
 add_test(NAME run_hlc_extern_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_EXTERNDEMO_BYTECODE})
 set_tests_properties(run_hlc_extern_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
@@ -169,13 +219,13 @@ add_test(NAME run_hlc_time_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_TIMEDEMO
 set_tests_properties(run_hlc_time_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x1 -> 10")
 
 add_test(NAME run_hlc_const_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_CONSTDEMO_BYTECODE})
-set_tests_properties(run_hlc_const_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 24")
+set_tests_properties(run_hlc_const_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 24")
 
 add_test(NAME run_hlc_sugar_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SUGARDEMO_BYTECODE})
-set_tests_properties(run_hlc_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 56")
+set_tests_properties(run_hlc_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 56")
 
 add_test(NAME run_hlc_more_sugar_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_MORESUGARDEMO_BYTECODE})
-set_tests_properties(run_hlc_more_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 155")
+set_tests_properties(run_hlc_more_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 155")
 
 add_test(NAME run_hlc_sections_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SECTIONSDEMO_BYTECODE})
 set_tests_properties(run_hlc_sections_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 20")

@@ -17,7 +17,7 @@ just rebuild.
 
 | | |
 |---|---|
-| `*.exe` | the tools themselves — `pvmc`, `pvmcc`, `pvmsim`, `pvmdisasm`, `pvmdbg` |
+| `*.exe` | the tools themselves — `pvminit`, `pvmc`, `pvmcc`, `pvmsim`, `pvmdisasm`, `pvmdbg` |
 | [`pvm/`](pvm/) | the VM core in source: what gets compiled into an MCU firmware |
 | [`lib/`](lib/) | the `.hlc` standard library — `pvmcc` looks for it beside itself |
 | [`docs/`](docs/) | the manuals for both languages and for the debugger |
@@ -30,7 +30,9 @@ just rebuild.
 - [`docs/hlc-language.en.md`](docs/hlc-language.en.md) — the high-level C-like
   language;
 - [`docs/debugger.en.md`](docs/debugger.en.md) — the debugger, its protocol,
-  and what the firmware side needs.
+  and what the firmware side needs;
+- [`docs/project-generator.en.md`](docs/project-generator.en.md) — the
+  generator of build and debug scripts for a project of your own.
 
 References inside those texts to source files (`hlc/codegen.cpp`, `example/…`)
 point into the repository: only the manuals themselves are copied here.
@@ -62,6 +64,44 @@ prog.bin --[pvmdbg]-----> stepping: breakpoints, single steps, stack inspection
 ```
 
 If you write assembly (`.pvms`) directly, skip `pvmcc` and start at `pvmc`.
+
+## pvminit — the build and debug script generator
+
+```
+pvminit [directory] [-m main.hlc] [-n name] [-p COM3] [--tools dir]
+        [--make program] [--no-vscode] [-f]
+```
+
+The most convenient place to start a program of your own: instead of
+writing out the `pvmcc` and `pvmc` calls with all their flags by hand, it
+generates a ready `Makefile` and `.vscode/` that already know the path to
+this very folder of tools:
+
+```
+pvminit myproject --port COM6
+cd myproject
+make run        # build it and run it in the simulator
+make debug      # step through it in the VM
+make board      # the same on a board
+```
+
+It writes a `Makefile`, a skeleton `main.hlc` (when there is no program
+yet), a `.gitignore` and a `.vscode/` holding the debug configurations
+(F5) and the build task (Ctrl+Shift+B). These are ordinary files, meant
+to be edited afterwards, so one that is already there is never
+overwritten without `--force`.
+
+With no arguments it sets up the current directory — and when exactly
+one `.hlc` is already sitting there, that one becomes the main source.
+
+The path to the tools is taken from the directory `pvminit` was called
+from, when the tools are in it (so `cd` here and run it from here to tie
+a project to this very folder); otherwise from the directory
+`pvminit.exe` lives in. `--tools` names it explicitly.
+
+GNU make is required; which name it goes by on this machine (`make`,
+`mingw32-make`, `gmake`) `pvminit` works out for itself. The details are
+in [`docs/project-generator.en.md`](docs/project-generator.en.md).
 
 ## pvmc — the assembler (`.pvms` → bytecode)
 
@@ -150,7 +190,13 @@ only matters when running from inside the `build/` tree).
 
 ```
 pvmsim program.bin
+pvmsim program.bin --stack 256 --ram 128   # other pool sizes, in words
 ```
+
+The stack and RAM sizes are set at launch (`--stack`, `--ram`; 1024 and 64
+words by default, `PVM_CFG_*` in `pvm/pvm.h`) — the way a firmware sizes the
+pools for its own board, so a program can be run against exactly the sizes the
+device will have. `--steps N` changes the 100000-instruction limit.
 
 A program that reaches `HALT` exits with code 0 and the words
 `pvmsim: halted`; a program with an execution error (a bad address, say) exits
@@ -161,7 +207,7 @@ never reaches `HALT` at all — that is normal and intended.
 
 ```
 pvmdbg [program.bin]       # a VM inside the tool's own process
-pvmdbg --port COM3         # a board over a serial port, 115200 8N1
+pvmdbg --port COM3         # a board over a serial port, 9600 8N1 (--baud N for another)
 pvmdbg --port COM3 --map prog.dbgmap    # plus source lines
 ```
 

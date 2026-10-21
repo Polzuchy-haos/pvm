@@ -1,0 +1,18 @@
+break arrays_and_logic.hlc:20
+run
+run
+run
+bt
+locals
+print sum
+print arr
+print nosuch
+up
+locals
+bt full
+up
+frame 0
+clear arrays_and_logic.hlc:20
+run
+globals
+exit
