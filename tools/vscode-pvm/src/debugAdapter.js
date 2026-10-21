@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 
 const {
@@ -33,6 +34,9 @@ const MAX_STEP_INSTRUCTIONS = 2000;
 const THREAD_ID = 1;
 const SCOPE_REGISTERS = 1;
 const SCOPE_STACK = 2;
+const SCOPE_GLOBALS = 3;
+/* A frame's locals are SCOPE_LOCALS + its index in the call stack. */
+const SCOPE_LOCALS = 1000;
 
 class PvmDebugSession extends LoggingDebugSession {
 	constructor() {
@@ -41,6 +45,8 @@ class PvmDebugSession extends LoggingDebugSession {
 		this.client = new PvmdbgClient();
 		this.map = new SourceMap();
 		this.lastPc = 0;
+		/* Frames in the last stack trace that came with symbols; 0 without. */
+		this.frameCount = 0;
 		this.stopRequested = false;
 		this.running = false;
 		/* Every breakpoint VS Code has asked for, across all files: the device is
@@ -68,17 +74,21 @@ class PvmDebugSession extends LoggingDebugSession {
 		const exe = args.pvmdbg || 'pvmdbg';
 		const spawnArgs = [];
 
+		const mapPath = args.map || (args.program ? args.program.replace(/\.[^.\\/]*$/, '.dbgmap') : null);
+
 		if (args.port) spawnArgs.push('--port', args.port);
 		if (args.port && args.baud) spawnArgs.push('--baud', String(args.baud));
 		else if (args.tcp) spawnArgs.push('--tcp', args.tcp);
 		else if (args.program) spawnArgs.push(args.program);
+		/* pvmdbg reads the map's symbols itself and answers "frames"/"vars" --
+		 * the frame walking stays in C, next to the protocol it is built on. */
+		if (mapPath && fs.existsSync(mapPath)) spawnArgs.push('--map', mapPath);
 		spawnArgs.push('--machine');
 
 		this.client.onStderr = (text) => this.sendEvent(new OutputEvent(text, 'stderr'));
 		this.client.onExit = () => this.sendEvent(new TerminatedEvent());
 		this.client.start(exe, spawnArgs);
 
-		const mapPath = args.map || (args.program ? args.program.replace(/\.[^.\\/]*$/, '.dbgmap') : null);
 		if (mapPath) {
 			try {
 				this.map.load(mapPath);
@@ -278,38 +288,92 @@ class PvmDebugSession extends LoggingDebugSession {
 	}
 
 	async stackTraceRequest(response) {
-		const state = await this._state();
-		const pc = state ? state.pc : this.lastPc;
-		const where = this.map.locationFor(pc);
-		const name = `0x${pc.toString(16).toUpperCase().padStart(4, '0')}`;
+		const frames = await this.client.command('frames');
+		let stackFrames = [];
 
-		/*
-		 * One frame. Walking the real call stack would mean reading saved frame
-		 * pointers back out of the device and knowing which function each return
-		 * address belongs to -- worth doing, but a separate piece of work.
-		 */
-		const frame = where
-			? new StackFrame(1, name, new Source(path.basename(where.file), where.file), where.line)
-			: new StackFrame(1, name);
+		/* With symbols, pvmdbg walks the real call stack; without them there is
+		 * just where PC is. */
+		if (frames.ok && frames.n > 0) {
+			for (let i = 0; i < frames.n; i++) {
+				const pc = frames[`pc${i}`];
+				/* A caller's pc is the return address -- the instruction after its
+				 * CALL; the line to show is the CALL's own. */
+				stackFrames.push(this._frame(i + 1, frames[`fn${i}`], i === 0 ? pc : pc - 3, pc));
+			}
+			this.frameCount = frames.n;
+		}
+		else {
+			const state = await this._state();
+			const pc = state ? state.pc : this.lastPc;
+			stackFrames = [this._frame(1, null, pc, pc)];
+			this.frameCount = 0;
+		}
 
-		response.body = { stackFrames: [frame], totalFrames: 1 };
+		response.body = { stackFrames, totalFrames: stackFrames.length };
 		this.sendResponse(response);
 	}
 
-	scopesRequest(response) {
-		response.body = {
-			scopes: [
-				new Scope('Registers', SCOPE_REGISTERS, false),
-				new Scope('Stack', SCOPE_STACK, false)
-			]
-		};
+	_frame(id, func, lineAddress, pc) {
+		const where = this.map.locationFor(lineAddress);
+		const hex = `0x${pc.toString(16).toUpperCase().padStart(4, '0')}`;
+		const name = func ? `${func} (${hex})` : hex;
+
+		return where
+			? new StackFrame(id, name, new Source(path.basename(where.file), where.file), where.line)
+			: new StackFrame(id, name);
+	}
+
+	scopesRequest(response, args) {
+		const scopes = [];
+		const index = (args.frameId || 1) - 1;
+
+		if (this.frameCount > 0) {
+			scopes.push(new Scope('Locals', SCOPE_LOCALS + index, false));
+			scopes.push(new Scope('Globals', SCOPE_GLOBALS, false));
+		}
+		scopes.push(new Scope('Registers', SCOPE_REGISTERS, false));
+		scopes.push(new Scope('Stack', SCOPE_STACK, false));
+
+		response.body = { scopes };
 		this.sendResponse(response);
 	}
 
 	async variablesRequest(response, args) {
+		const ref = args.variablesReference;
 		let variables = [];
 
-		if (args.variablesReference === SCOPE_REGISTERS) {
+		if (ref >= SCOPE_LOCALS) {
+			const reply = await this.client.command(`vars ${ref - SCOPE_LOCALS}`);
+			if (reply.ok) {
+				for (let i = 0; i < reply.n; i++) {
+					const value = reply[`val${i}`];
+					const offset = reply[`off${i}`];
+					variables.push({
+						name: reply[`name${i}`],
+						value: value === '?' ? 'not there yet' : String(value),
+						type: `${reply[`kind${i}`]}, FP${offset >= 0 ? '+' : ''}${offset}`,
+						variablesReference: 0
+					});
+				}
+			}
+		}
+		else if (ref === SCOPE_GLOBALS) {
+			const reply = await this.client.command('globals');
+			if (reply.ok) {
+				for (let i = 0; i < reply.n; i++) {
+					const value = reply[`val${i}`];
+					const size = reply[`size${i}`];
+					variables.push({
+						name: reply[`name${i}`],
+						value: size > 1 ? `{${String(value).split(',').join(', ')}}` : String(value),
+						type: `0x${reply[`addr${i}`].toString(16).toUpperCase().padStart(4, '0')}` +
+							(size > 1 ? `, ${size} words` : ''),
+						variablesReference: 0
+					});
+				}
+			}
+		}
+		else if (ref === SCOPE_REGISTERS) {
 			const state = await this._state();
 			if (state) {
 				variables = [
@@ -319,7 +383,7 @@ class PvmDebugSession extends LoggingDebugSession {
 				];
 			}
 		}
-		else if (args.variablesReference === SCOPE_STACK) {
+		else if (ref === SCOPE_STACK) {
 			const reply = await this.client.command('stack 8');
 			if (reply.ok) {
 				for (let i = 0; i < reply.n; i++)

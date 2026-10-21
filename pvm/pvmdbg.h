@@ -138,6 +138,12 @@ enum PVMDbgCmd_e{
    * address that is neither. */
   DBGCMD_READ_DATA  = 0x07,
 
+  /* index(2) -> word(2) depth(2): like READ_STACK, but counted from the bottom
+   * of the stack and two bytes wide -- how the host reads a variable at a
+   * known place in a frame (FP + offset) however deep the frame is. ERROR for
+   * an index at or past the top. */
+  DBGCMD_READ_STACK_AT = 0x08,
+
   /* Execution control. They decide what PVMDBG_IsAccessExecTick answers on the
    * following turns of the main loop rather than executing anything
    * themselves. No data either way. */

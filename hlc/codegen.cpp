@@ -583,8 +583,15 @@ private:
 		}
 
 		Label(f.name);
+		/* Symbols for the debugger (see the assembler's GenerateDebugMap): which
+		 * code is this function's, and where in its frame each name lives. A
+		 * parameter is there once ENTER has built the frame -- before it, FP is
+		 * still the caller's. */
+		*activeOut_ << ".func " << f.name << "\n";
 		EmitDebugLine(f.file, f.line);
 		Line("ENTER");
+		for(int i = 0; i < n; i++)
+			*activeOut_ << ".param " << f.params[i].name << " " << locals_[f.params[i].name] << "\n";
 
 		if(curFuncIsMain_) EmitGlobalInitializers(program);
 
@@ -593,6 +600,7 @@ private:
 
 		Line("LEAVE");
 		Line(curFuncIsMain_ ? "HALT" : "RET");
+		*activeOut_ << ".endfunc\n";
 		*activeOut_ << "\n";
 
 		frameMax_[f.name] = maxDepth_;
@@ -692,6 +700,10 @@ private:
 		locals_[s->name] = offset;
 		if(s->init) EmitExpr(s->init.get());
 		else Line("PUSH 0");
+
+		/* After the initializer, not before: until it has run, the slot holds
+		 * whatever the expression was computing, not the variable. */
+		*activeOut_ << ".local " << s->name << " " << offset << "\n";
 	}
 
 	/* Statement-context expression: a call to a void function emits nothing

@@ -217,7 +217,11 @@ int HostExecStep(HostExec_s* hx){
 }
 
 int HostExecRun(HostExec_s* hx){
-	int first = 1;
+	return HostExecRunFrom(hx, 1);
+}
+
+int HostExecRunFrom(HostExec_s* hx, int skipBreakHere){
+	int first = skipBreakHere;
 
 	for(;;){
 		int r;

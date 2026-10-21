@@ -248,6 +248,14 @@ int main(void){
   Exchange(&dbg, buf, DBGCMD_READ_STACK, arg, 1);
   CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "and past the bottom is refused");
 
+  arg[0] = 0; arg[1] = 0;
+  Exchange(&dbg, buf, DBGCMD_READ_STACK_AT, arg, 2);
+  CHECK(ReplyCmd(buf) == DBGCMD_READ_STACK_AT && (int16_t)ReplyWord(buf, 0) == 5 && ReplyWord(buf, 2) == 2,
+        "READ_STACK_AT 0 is the bottom, with the depth");
+  arg[0] = 2;
+  Exchange(&dbg, buf, DBGCMD_READ_STACK_AT, arg, 2);
+  CHECK(ReplyCmd(buf) == DBGCMD_ERROR, "and at the top or past it is refused");
+
   /* ---- reading bytecode back off the device ---- */
 
   arg[0] = 6; arg[1] = 0; /* ADD, HALT, then past the end */

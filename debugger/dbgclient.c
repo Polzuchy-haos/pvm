@@ -69,6 +69,31 @@ int DbgReadStack(Transport_s* link, char* frame, int16_t* words, int max){
 	return n;
 }
 
+int DbgReadStackAt(Transport_s* link, char* frame, uint16_t sp, int index, int16_t* word){
+	uint8_t d[PVMDBG_DATA_SIZE];
+	uint8_t arg[2];
+	int 		r, fromTop;
+
+	if(index < 0 || index >= sp) return 0;
+
+	arg[0] = (uint8_t)(index & 0xFF);
+	arg[1] = (uint8_t)(index >> 8);
+	r = DbgCommand(link, frame, DBGCMD_READ_STACK_AT, arg, 2, d);
+	if(r < 0) return -1;
+	if(r == DBGCMD_READ_STACK_AT){ *word = (int16_t)Get16(d); return 1; }
+
+	fromTop = sp - 1 - index;
+	if(fromTop > 255) return 0;
+
+	arg[0] = (uint8_t)fromTop;
+	r = DbgCommand(link, frame, DBGCMD_READ_STACK, arg, 1, d);
+	if(r < 0) 								return -1;
+	if(r != DBGCMD_READ_STACK) return 0;
+
+	*word = (int16_t)Get16(d);
+	return 1;
+}
+
 int DbgReadCode(Transport_s* link, char* frame, uint16_t addr, uint8_t* bytes, int max,
 								uint16_t codeLen){
 	uint8_t d[PVMDBG_DATA_SIZE];

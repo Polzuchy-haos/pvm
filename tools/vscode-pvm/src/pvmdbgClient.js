@@ -11,7 +11,8 @@ const { spawn } = require('child_process');
  * this only sends lines and reads lines back.
  */
 
-/* "ok pc=39 sp=11" -> { ok: true, pc: 39, sp: 11 };  "error refused" -> { ok: false, error: 'refused' } */
+/* "ok pc=39 fn0=square" -> { ok: true, pc: 39, fn0: 'square' };  "error refused" -> { ok: false, error: 'refused' }
+ * Numbers come back as numbers; anything else -- a name, "?", "0,2,4" -- as the text it was. */
 function parseReply(line) {
 	const parts = line.trim().split(/\s+/);
 
@@ -21,7 +22,11 @@ function parseReply(line) {
 	const reply = { ok: true };
 	for (const part of parts.slice(1)) {
 		const eq = part.indexOf('=');
-		if (eq > 0) reply[part.slice(0, eq)] = Number(part.slice(eq + 1));
+		if (eq <= 0) continue;
+
+		const text = part.slice(eq + 1);
+		const number = Number(text);
+		reply[part.slice(0, eq)] = (text !== '' && !Number.isNaN(number)) ? number : text;
 	}
 	return reply;
 }

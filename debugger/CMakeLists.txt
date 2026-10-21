@@ -15,6 +15,10 @@ add_executable(pvmdbg
 	hostexec.c
 	dbgclient.h
 	dbgclient.c
+	debugsym.h
+	debugsym.c
+	frames.h
+	frames.c
 	sourcemap.h
 	sourcemap.c
 	machine.h

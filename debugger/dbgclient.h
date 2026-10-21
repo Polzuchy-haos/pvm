@@ -43,6 +43,12 @@ int DbgGetRegs(Transport_s* link, char* frame, uint16_t* sp, uint16_t* fp);
 /* Up to `max` words off the top of the stack, top first; how many there were. */
 int DbgReadStack(Transport_s* link, char* frame, int16_t* words, int max);
 
+/* The word at `index` counted from the bottom of the stack, given the depth
+ * `sp` the caller already knows. 1 with *word filled in, 0 when there is no
+ * such word, -1 for no answer. Falls back to READ_STACK (from the top, within
+ * 256 words of it) on an agent that predates READ_STACK_AT. */
+int DbgReadStackAt(Transport_s* link, char* frame, uint16_t sp, int index, int16_t* word);
+
 /* Up to `max` bytes of code from `addr`, never past `codeLen` (pass 0xFFFF if
  * it is not known -- the device pads the end with HALT). How many came back;
  * 0 for an address past the end. */

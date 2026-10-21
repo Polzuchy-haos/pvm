@@ -258,6 +258,18 @@ static int _Dispatch(PVMDbg_s* dbg, uint8_t* frame, uint16_t cmd, const uint8_t*
   case DBGCMD_READ_STACK:
     return _ReadStack(dbg, frame, in[0]);
 
+  case DBGCMD_READ_STACK_AT:
+  {
+    int depth = (int)(dbg->state->SP - dbg->state->stack);
+    int index = _Get16(in);
+
+    if(index >= depth) return _Reply(frame, DBGCMD_ERROR);
+
+    _Put16(out + 0, (uint16_t)dbg->state->stack[index]);
+    _Put16(out + 2, (uint16_t)depth);
+    return _Reply(frame, cmd);
+  }
+
   case DBGCMD_READ_CODE:
     return _ReadCode(dbg, frame, _Get16(in));
 

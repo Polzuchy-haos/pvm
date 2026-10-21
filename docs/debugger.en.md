@@ -65,6 +65,12 @@ questions in a row is an unplugged cable or a reset, and the tool says so.
 | `break <where>` | | breakpoint: `break 0x12` or `break blink.hlc:21` |
 | `clear <addr>` | | remove one |
 | `breaks` | `b` | which ones are set |
+| `bt [full]` | `where` | the call stack: functions, their arguments and the calling lines; `full` adds every frame's variables |
+| `frame [N]` | `f` | select frame `N` of `bt` (`0` is where the program stands); without `N`, show the selected one |
+| `up [n]`, `down [n]` | | move to the caller / the callee |
+| `locals` | | the selected frame's parameters and locals |
+| `print <name>` | | a variable: the selected frame's, else a global (an array in full) |
+| `globals` | | every global and its value |
 | `exec <code>` | | with `--host`: run a few instructions on the device (see below) |
 | `call <fn> [words]` | | with `--host`: run a single function (see below) |
 | `help` | `?` | this list |
@@ -131,6 +137,43 @@ Peripherals and SVC handlers are the same as `pvmsim`'s (they share
 does in an ordinary run. Locally, a program with no breakpoints and no `HALT`
 will not hang the tool: after two million instructions the session pauses
 itself (on a board, `Ctrl+C` does that job).
+
+### Variables by name
+
+With a map from `pvmcc` → `pvmc -g`, the tool knows which function every
+address belongs to and where in the frame every variable lives:
+
+```
+(pvmdbg) bt
+  #0  total()  0x013F  arrays_and_logic.hlc:20
+  #1  main()  0x0013  arrays_and_logic.hlc:31
+(pvmdbg) locals
+  total
+    i            = 2        local FP+0
+    sum          = 2        local FP+1
+(pvmdbg) print arr
+  arr = {0, 2, 4, 6, 8}    (global at 0x0000, an array)
+```
+
+`pvmcc`'s frame layout is fixed: parameters below `FP` (`FP-3` and deeper),
+the return address at `FP-2`, the caller's saved `FP` at `FP-1`, locals at
+`FP+0`, `FP+1`… in the order they are declared. The call stack is rebuilt from
+the chain of saved `FP`s and return addresses; words are read off the device
+with `READ_STACK_AT` — the firmware needs to know nothing about frames. It
+works the same locally, over a serial port, over TCP and with `--host`.
+
+- On `ENTER` (a function's first instruction) the frame is not built yet, and
+  on `RET` it is already gone: parameters are visible, locals are not, and
+  `locals` says so.
+- A local exists from the instruction after its declaration; before that its
+  slot holds intermediate values of expressions, and it is shown as "not there
+  yet".
+- `frame N`, `up` and `down` select the frame `locals` and `print` look at
+  (marked `>` in `bt`); after `run`/`step`/`pause`/`reset`/`call` the selection
+  goes back to `#0`.
+- Globals are read with `READ_DATA` at the address from the map.
+- The cost over a serial port at 9600: ~26 ms a word plus `REGS`; `bt` a few
+  frames deep takes some 0.2–0.3 s.
 
 ### Over TCP (`--tcp`)
 
@@ -251,7 +294,8 @@ and VS Code do not support this mode yet.
 ## In VS Code
 
 Breakpoints in the editor gutter, F5/F10/F11, the current line highlighted, the
-stack in the variables pane. Installation and `launch.json` are described in
+call stack and variables by name (Locals and Globals, plus Registers and the
+raw Stack). Installation and `launch.json` are described in
 `Release/vscode-extension/README.en.md`.
 
 The extension does **not** talk to the board itself: it runs
@@ -271,6 +315,8 @@ The machine mode is line-based, one command and one reply per line:
 > poll           < ok running=0
 > stack 4        < ok n=2 v0=3 v1=5
 > mem            < ok stack=1024 ram=64
+> frames         < ok n=2 pc0=22 fn0=square built0=1 pc1=10 fn1=main built1=1
+> vars 0         < ok n=1 name0=x kind0=param off0=-3 val0=7
 ```
 
 Deliberately not JSON: only numbers cross this boundary, so `key=value` pairs
@@ -287,9 +333,10 @@ instruction usually leaves the highlight where it was, and F10 would look
 broken. F10 stays out of calls (while the frame pointer is deeper than it
 started, keep going); F11 stops at the first change of line.
 
-What the extension does not have yet: a multi-frame call stack (one frame is
-shown) and local variable names — the stack is shown as values. And no more
-than four breakpoints: that is how many slots the device-side agent has.
+The call stack and the variables are worked out by `pvmdbg` itself (the machine
+mode verbs `frames`, `vars N`, `globals`): the extension hands it the map with
+`--map`. What the extension does not have yet: more than four breakpoints —
+that is how many slots the device-side agent has.
 
 ## The device side
 
@@ -382,6 +429,7 @@ both ends, so two implementations of one format cannot drift apart.
 | `MEM_INFO` `0x05` | which(1) | `0`: stack and RAM sizes (words); `1`: code length (bytes), usrsect (words) |
 | `REGS` `0x06` | — | `sp`(2), `fp`(2) — stack depths |
 | `READ_DATA` `0x07` | address(2) | word(2): RAM from `0`, usrsect from `0x4000`, as `LOAD` sees them; anything else — `ERROR` |
+| `READ_STACK_AT` `0x08` | index from the bottom(2) | word(2), depth(2); at the top or past it — `ERROR`. How the host reads a variable at `FP` + offset at any depth |
 | `RUN` `0x10` | — | — |
 | `PAUSE` `0x11` | — | — |
 | `STEP` `0x12` | — | — |
@@ -418,10 +466,3 @@ about 26 ms (2 × 12.5 ms on the wire). Per tool command that comes to: `state`
   `PVM_ExecTick` are seen only by the loop; they do not reach `STATE`, so in a
   session against a real board such an error is invisible. The exception is
   `--host` mode, where every instruction comes back with its status.
-- **A multi-frame call stack.** Both the terminal tool and the extension show
-  one frame — where execution currently is. Walking the real stack means
-  reading saved frame pointers back out of the device and working out which
-  function each return address belongs to.
-- **Local variable names.** The VM stack is shown as values; mapping frame
-  offsets back to the names in the `.hlc` source would need another table
-  alongside the line map.

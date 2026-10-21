@@ -137,6 +137,13 @@ add_test(NAME run_pvmdbg_tcp COMMAND ${CMAKE_COMMAND}
 	-DWORK=${CMAKE_CURRENT_BINARY_DIR}
 	-P ${CMAKE_SOURCE_DIR}/debugger/run_tcp_session.cmake)
 
+# Variables by name -- the debug map's symbols, read back as a call stack.
+add_test(NAME run_pvmdbg_vars COMMAND ${CMAKE_COMMAND}
+	-DTOOL=$<TARGET_FILE:pvmdbg>
+	-DBIN=${PVM_HLC_ARRLOGIC_BYTECODE}
+	-DSESSION=${CMAKE_SOURCE_DIR}/debugger/vars_session.txt
+	-P ${CMAKE_SOURCE_DIR}/debugger/run_vars_session.cmake)
+
 # The same tool in the mode the VS Code extension drives it in.
 add_test(NAME run_pvmdbg_machine COMMAND ${CMAKE_COMMAND}
 	-DTOOL=$<TARGET_FILE:pvmdbg>

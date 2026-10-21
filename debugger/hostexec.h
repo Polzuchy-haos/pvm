@@ -96,6 +96,11 @@ int  HostExecStep(HostExec_s* hx);
  * is already on is stepped over, the way RUN does on the device. */
 int  HostExecRun(HostExec_s* hx);
 
+/* The same, saying whether a breakpoint on the PC it starts from counts: not
+ * after stopping there (that is what RUN means), but yes when the PC has just
+ * been put there -- "call" into a function with a breakpoint on its entry. */
+int  HostExecRunFrom(HostExec_s* hx, int skipBreakHere);
+
 /*
  * Sets up a call to the function at `addr`: pushes `args` in order on the
  * device's stack, then HOSTEXEC_RET_SENTINEL as its return address, and moves

@@ -18,6 +18,8 @@
 #include "machine.h"
 #include "pvmdbg.h"
 #include "sourcemap.h"
+#include "debugsym.h"
+#include "frames.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -275,6 +277,267 @@ static void ShowBreakpoints(void){
 	printf("\n");
 }
 
+/* ---- variables ---------------------------------------------------------- */
+
+/* Where the program is and what instruction is there: the host's own in --host
+ * mode, the device's otherwise (the instruction is then read when needed). 0
+ * when there is no answer, or PC is on host-fed code from a session that never
+ * detached. */
+static int CurrentPc(uint16_t* pc, int* opcode){
+	uint8_t d[PVMDBG_DATA_SIZE];
+
+	if(g_hostMode){
+		*pc 		= g_host.pc;
+		*opcode = (g_host.pc < g_host.len) ? g_host.code[g_host.pc] : -1;
+		return 1;
+	}
+
+	/* STATE alone: SP and FP come with the frame walk anyway. */
+	if(DbgCommand(g_link, g_frame, DBGCMD_STATE, 0, 0, d) != DBGCMD_STATE){ NoAnswer(); return 0; }
+
+	*pc 		= (uint16_t)(d[0] | (d[1] << 8));
+	*opcode = -1;
+	if(*pc == DBG_PC_NOT_IN_PROGRAM){ printf("  PC is not in the program\n"); return 0; }
+	return 1;
+}
+
+/* `maxFrames` 1 for what concerns the current function only: each frame
+ * further up costs a few more round trips. */
+static int WalkFramesFrom(uint16_t pc, int opcode, int maxFrames, CallStack_s* cs){
+	if(FramesWalk(g_link, g_frame, pc, opcode, maxFrames, cs) < 0){ NoAnswer(); return 0; }
+	if(!cs->frames[0].func){
+		printf("  no symbols for 0x%04X -- the debug map has none (pvmc -g, from pvmcc output)\n", pc);
+		return 0;
+	}
+	return 1;
+}
+
+static int WalkFrames(int maxFrames, CallStack_s* cs){
+	uint16_t pc;
+	int 		 opcode;
+
+	return CurrentPc(&pc, &opcode) && WalkFramesFrom(pc, opcode, maxFrames, cs);
+}
+
+/* "file.hlc:12" for an address, or nothing without a map. */
+static void PrintWhere(uint16_t addr){
+	int 				line;
+	const char* file = SourceMapFileFor(addr, &line);
+
+	if(file) printf("  %s:%d", SourceMapBaseName(file), line);
+}
+
+/* The frame 'frame', 'up' and 'down' have selected -- 0 is the one the
+ * program stopped in. 'locals' and 'print' look there. Anything that moves
+ * the program sets it back to 0 (see Execute): the frames it named are gone. */
+static int g_selFrame = 0;
+
+/* The address whose source line a frame is "at": its PC for frame 0; for a
+ * caller, its CALL -- the return address is the instruction after it. */
+static uint16_t FrameLineAddr(const CallStack_s* cs, int i){
+	return (i == 0) ? cs->frames[0].pc : (uint16_t)(cs->frames[i].pc - 3);
+}
+
+/* "  #1  Time_Delay(ticks=250)  0x007C  time.hlc:31", marked '>' when it is the
+ * selected frame. 0 when the device stopped answering. */
+static int PrintFrameLine(const CallStack_s* cs, int i){
+	const Frame_s* f 		 = &cs->frames[i];
+	int 					 first = 1;
+
+	printf("%s#%d  %s(", (i == g_selFrame) ? "> " : "  ", i, f->func);
+	for(int v = 0; v < DebugSymVarCount(); v++){
+		const DebugVar_s* var = DebugSymVar(v);
+		int16_t 					value;
+
+		if(!var->isParam || strcmp(var->func, f->func)) continue;
+
+		printf("%s%s=", first ? "" : ", ", var->name);
+		first = 0;
+		switch(FramesReadVar(g_link, g_frame, cs, f, var, &value)){
+		case 1:  printf("%d", value); break;
+		case 0:  printf("?"); 				 break;
+		default: printf("\n"); NoAnswer(); return 0;
+		}
+	}
+	printf(")  0x%04X", f->pc);
+	PrintWhere(FrameLineAddr(cs, i));
+	printf("\n");
+	return 1;
+}
+
+/* A frame's parameters and locals, one per line. 0 when the device stopped
+ * answering. */
+static int PrintFrameVars(const CallStack_s* cs, int i, const char* indent){
+	const Frame_s* f 	 = &cs->frames[i];
+	int 					 any = 0;
+
+	for(int v = 0; v < DebugSymVarCount(); v++){
+		const DebugVar_s* var = DebugSymVar(v);
+		int16_t 					value;
+
+		if(strcmp(var->func, f->func)) continue;
+		any = 1;
+
+		printf("%s%-12s ", indent, var->name);
+		switch(FramesReadVar(g_link, g_frame, cs, f, var, &value)){
+		case 1:  printf("= %-8d %s FP%+d\n", value, var->isParam ? "param" : "local", var->offset); break;
+		case 0:  printf("  --       %s, not there yet\n", var->isParam ? "param" : "local"); 	 break;
+		default: NoAnswer(); return 0;
+		}
+	}
+
+	if(!any) printf("%sno parameters or locals\n", indent);
+	return 1;
+}
+
+/* Walks just as far as the selected frame. Its index, or -1. A selection
+ * deeper than the stack now is (a 'reset' from the prompt, say) falls back
+ * to the outermost frame there is. */
+static int WalkToSelected(CallStack_s* cs){
+	if(!WalkFrames(g_selFrame + 1, cs)) return -1;
+
+	if(g_selFrame >= cs->count){
+		g_selFrame = cs->count - 1;
+		printf("  the stack is only %d frame(s) deep now -- frame #%d selected\n", cs->count, g_selFrame);
+	}
+	return g_selFrame;
+}
+
+/* "bt", or "bt full" for every frame's variables as well. */
+static void ShowBacktrace(const char* arg){
+	CallStack_s cs;
+	int 				full = arg && !strcmp(arg, "full");
+
+	if(!WalkFrames(FRAMES_MAX, &cs)) return;
+	if(g_selFrame >= cs.count) g_selFrame = cs.count - 1;
+
+	for(int i = 0; i < cs.count; i++){
+		if(!PrintFrameLine(&cs, i)) return;
+		if(full && !PrintFrameVars(&cs, i, "        ")) return;
+	}
+}
+
+/* "frame N" selects a frame and shows where it is; "frame" alone shows the
+ * selected one; "up"/"down" move towards the caller / the callee. */
+static void SelectFrame(int index){
+	CallStack_s cs;
+
+	if(index < 0){ printf("  already at the innermost frame (#0)\n"); return; }
+
+	/* One past it, to know whether it exists. */
+	if(!WalkFrames(index + 1, &cs)) return;
+	if(index >= cs.count){
+		if(index == cs.count) printf("  already at the outermost frame (#%d, %s)\n", cs.count - 1, cs.frames[cs.count - 1].func);
+		else 									printf("  no frame #%d -- the stack is %d frame(s) deep\n", index, cs.count);
+		return;
+	}
+
+	g_selFrame = index;
+	if(!PrintFrameLine(&cs, index)) return;
+	ShowSource(FrameLineAddr(&cs, index));
+}
+
+static void FrameCmd(const char* verb, const char* arg){
+	if(!strcmp(verb, "up")) 				 SelectFrame(g_selFrame + (arg ? atoi(arg) : 1));
+	else if(!strcmp(verb, "down")) SelectFrame(g_selFrame - (arg ? atoi(arg) : 1));
+	else if(arg) 									 SelectFrame(atoi(arg));
+	else 													 SelectFrame(g_selFrame);
+}
+
+static void ShowLocals(void){
+	CallStack_s 	 cs;
+	const Frame_s* f;
+	int 					 i = WalkToSelected(&cs);
+
+	if(i < 0) return;
+	f = &cs.frames[i];
+
+	printf("  #%d %s%s\n", i, f->func, f->built ? "" : "  (frame not built: PC is on its ENTER or RET)");
+	PrintFrameVars(&cs, i, "    ");
+}
+
+/* A global's words, from data memory: one value, or {a, b, ...} for an array. */
+static void PrintGlobalValue(const DebugGlobal_s* g){
+	int shown = g->size < 16 ? g->size : 16;
+
+	if(g->size > 1) printf("{");
+	for(int i = 0; i < shown; i++){
+		int16_t value;
+
+		switch(DbgReadData(g_link, g_frame, (uint16_t)(g->addr + i), &value)){
+		case 1:  printf("%s%d", i ? ", " : "", value); break;
+		case 0:  printf("%s?", i ? ", " : ""); 				 break;
+		default: printf("\n"); NoAnswer(); return;
+		}
+	}
+	if(g->size > shown) printf(", ...");
+	if(g->size > 1) printf("}");
+}
+
+/* A name as the program sees it in the selected frame: that function's
+ * parameter or local first, then a global. */
+static void ShowPrint(const char* name){
+	const DebugGlobal_s* g;
+
+	if(!name){ printf("  expected a variable name, e.g. 'print sum'\n"); return; }
+
+	if(DebugSymVarCount() > 0){
+		CallStack_s 			cs;
+		const DebugVar_s* var = 0;
+		int16_t 					value;
+		int 							i;
+
+		/* In frame 0, whether the function has such a variable is known from
+		 * the symbols alone, so a global costs no frame walk -- one READ_DATA. */
+		if(g_selFrame == 0){
+			Frame_s  here;
+			uint16_t pc;
+			int 		 opcode;
+
+			if(!CurrentPc(&pc, &opcode)) return;
+			here.func = DebugSymFuncAt(pc, 0);
+			if(here.func && FramesFindVar(&here, name)){
+				if(!WalkFramesFrom(pc, opcode, 1, &cs)) return;
+				var = FramesFindVar(&cs.frames[0], name);
+			}
+			i = 0;
+		}
+		else{
+			if((i = WalkToSelected(&cs)) < 0) return;
+			var = FramesFindVar(&cs.frames[i], name);
+		}
+
+		if(var){
+			switch(FramesReadVar(g_link, g_frame, &cs, &cs.frames[i], var, &value)){
+			case 1:  printf("  %s = %d\n", name, value); break;
+			case 0:  printf("  %s is not there yet -- %s\n", name,
+											 cs.frames[i].built ? "its declaration has not run" : "PC is on ENTER or RET"); break;
+			default: NoAnswer();
+			}
+			return;
+		}
+	}
+
+	g = DebugSymFindGlobal(name);
+	if(!g){ printf("  no variable '%s' here\n", name); return; }
+
+	printf("  %s = ", name);
+	PrintGlobalValue(g);
+	printf("    (global at 0x%04X%s)\n", g->addr, g->size > 1 ? ", an array" : "");
+}
+
+static void ShowGlobals(void){
+	if(DebugSymGlobalCount() == 0){ printf("  no globals in the debug map\n"); return; }
+
+	for(int i = 0; i < DebugSymGlobalCount(); i++){
+		const DebugGlobal_s* g = DebugSymGlobal(i);
+
+		printf("  %-12s 0x%04X  = ", g->name, g->addr);
+		PrintGlobalValue(g);
+		printf("\n");
+	}
+}
+
 static void ShowHelp(void){
 	printf(
 		"  run, r          continue until a breakpoint or the end of the program\n"
@@ -289,6 +552,13 @@ static void ShowHelp(void){
 		"  break <where>   set a breakpoint: 'break 0x10', or 'break blink.hlc:21'\n"
 		"  clear <addr>    remove one\n"
 		"  breaks, b       list the ones that are set\n"
+		"  bt, where       the call stack, with each function's arguments;\n"
+		"                  'bt full' adds every frame's variables\n"
+		"  frame [N]       select frame N of 'bt' (0 is where the program stopped)\n"
+		"  up, down [n]    select the caller / the callee\n"
+		"  locals          the selected frame's parameters and locals\n"
+		"  print <name>    a variable: the selected frame's, else a global\n"
+		"  globals         every global and its value\n"
 		"  exec <code>     with --host: run a few instructions on the device, e.g.\n"
 		"                  'exec LOAD 3; PUSH 1; ADD; STORE 3', or a .pvms / .bin file\n"
 		"  call <fn> [w..] with --host: push the words, run one function, stop when it\n"
@@ -416,11 +686,11 @@ static void HostShowState(int stop){
 	}
 }
 
-static void HostRun(void){
+static void HostRunFrom(int skipBreakHere){
 	int stop;
 
 	g_inRun = 1;
-	stop 		= HostExecRun(&g_host);
+	stop 		= HostExecRunFrom(&g_host, skipBreakHere);
 	g_inRun = 0;
 	TakeInterrupt();
 
@@ -473,7 +743,7 @@ static void HostCallCmd(char* rest){
 	}
 
 	if(!HostExecCall(&g_host, addr, args, argCount)){ printf("  %s\n", g_host.message); return; }
-	HostRun();
+	HostRunFrom(0); /* the PC was just put on the function: a breakpoint there counts */
 }
 
 /* Bytecode as pvmc -f bin wrote it. One byte more than fits is read on purpose,
@@ -554,7 +824,7 @@ static void HostExecCmd(const char* rest){
  * Returns 0 for the rest, which work the same either way: stack, mem. */
 static int HostCommand(const char* verb, const char* arg, char* rest){
 	if(!strcmp(verb, "state") || !strcmp(verb, "i")) 			HostShowState(-1);
-	else if(!strcmp(verb, "run") || !strcmp(verb, "r")) 	HostRun();
+	else if(!strcmp(verb, "run") || !strcmp(verb, "r")) 	HostRunFrom(1);
 	else if(!strcmp(verb, "step") || !strcmp(verb, "s")) HostShowState(HostExecStep(&g_host));
 	else if(!strcmp(verb, "pause") || !strcmp(verb, "p")) printf("  nothing is running -- Ctrl+C stops a run\n");
 	else if(!strcmp(verb, "reset")){ HostExecReset(&g_host); HostShowState(-1); }
@@ -606,6 +876,11 @@ static int Execute(char* line){
 
 	if(!strcmp(verb, "exit") || !strcmp(verb, "quit") || !strcmp(verb, "q")) return 0;
 
+	/* Whatever can move the program leaves the frames 'frame' chose behind. */
+	if(!strcmp(verb, "run") || !strcmp(verb, "r") || !strcmp(verb, "step") || !strcmp(verb, "s") ||
+		 !strcmp(verb, "pause") || !strcmp(verb, "p") || !strcmp(verb, "reset") || !strcmp(verb, "call"))
+		g_selFrame = 0;
+
 	if(g_hostMode && HostCommand(verb, arg, rest)) return 1;
 
 	if(!strcmp(verb, "help") || !strcmp(verb, "?")) 				 ShowHelp();
@@ -621,6 +896,12 @@ static int Execute(char* line){
 		else ShowCode(s.pc, DIS_LINES);
 	}
 	else if(!strcmp(verb, "data") || !strcmp(verb, "x")) 	 ShowData(arg, arg2);
+	else if(!strcmp(verb, "bt") || !strcmp(verb, "where")) ShowBacktrace(arg);
+	else if(!strcmp(verb, "frame") || !strcmp(verb, "f") ||
+					!strcmp(verb, "up") || !strcmp(verb, "down")) 	 FrameCmd(verb, arg);
+	else if(!strcmp(verb, "locals")) 											 ShowLocals();
+	else if(!strcmp(verb, "print")) 											 ShowPrint(arg);
+	else if(!strcmp(verb, "globals")) 										 ShowGlobals();
 	else if(!strcmp(verb, "stack")){
 		uint16_t count = STACK_DEFAULT;
 		if(arg) ParseAddr(arg, &count);
@@ -681,6 +962,7 @@ static void LoadMapFor(const char* explicitMap, const char* bytecodePath){
 
 	if(explicitMap){
 		SourceMapLoad(explicitMap);
+		DebugSymLoad(explicitMap);
 		return;
 	}
 
@@ -700,6 +982,7 @@ static void LoadMapFor(const char* explicitMap, const char* bytecodePath){
 	}
 
 	SourceMapLoad(guess);
+	DebugSymLoad(guess);
 }
 
 int main(int argc, char** argv){
@@ -763,13 +1046,14 @@ int main(int argc, char** argv){
 	else 				 g_link = TransportLocalOpen(hostPath ? hostPath : (path ? path : PVM_DEFAULT_BYTECODE));
 	if(!g_link) return EXIT_FAILURE;
 
-	/* Before anything is printed: from here on stdout carries the protocol, and
-	 * the source map is the caller's business rather than ours. */
-	if(machine) return MachineRun(g_link);
-
 	/* With --host the program is right here, so its map can be guessed even
-	 * when the device is at the far end of a cable. */
+	 * when the device is at the far end of a cable. Loaded in machine mode too:
+	 * the editor keeps its own copy for source lines, but the frames and
+	 * variables are worked out here. Quiet on success, so nothing reaches
+	 * stdout ahead of the protocol. */
 	LoadMapFor(map, hostPath ? hostPath : ((port || tcp) ? 0 : (path ? path : PVM_DEFAULT_BYTECODE)));
+
+	if(machine) return MachineRun(g_link);
 
 	if(hostPath){
 		if(!HostExecOpen(&g_host, g_link, g_frame, hostPath)){

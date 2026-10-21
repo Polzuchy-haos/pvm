@@ -55,6 +55,14 @@ label:                 # a label -- begins a new code block
   human writes by hand. The mark lives on the instruction rather than on an
   address, so it travels with it when `.entry` reorders the blocks. `pvmcc`
   emits these; `pvmc -g` collects them into a map (below).
+- **`.func NAME` … `.endfunc`**, **`.param NAME OFFSET`**, **`.local NAME
+  OFFSET`** — symbols for the debugger. The instructions between `.func` and
+  `.endfunc` belong to function `NAME`; `.param`/`.local` say a variable lives
+  in the frame `OFFSET` words from `FP` and exists from the **next**
+  instruction on (after `ENTER` for parameters, after the initializer for
+  locals). Like `.line` they occupy no bytecode and travel with their
+  instructions under `.entry`. `pvmcc` emits them; a hand-written `.pvms` may
+  have none at all.
 - **`.import file`** — splices the contents of another `.pvms` file in at this
   point, textually (like `#include`). The path is looked for next to the
   importing file: the exact name first, then with `.pvms` appended. Works
@@ -116,6 +124,19 @@ The file name is kept beside the number for a reason: `import` splices one
 file's statements into another, and "line 14" without a file would name a place
 in whichever file the reader happened to assume. `pvmdbg` reads this map to
 show source and to put breakpoints on lines — see `docs/debugger.en.md`.
+
+After the lines come the symbols — records starting with `@` (which is what
+lets anything that reads only "address → line" skip them):
+
+```
+@func 0x0012 0x0021 square        # [start, end) -- the function's code
+@var square param x -3 0x0013     # function, kind, name, offset from FP, exists from this address
+@var total local sum 1 0x0125
+@global RESULT 0x0000 1           # a .var: address and size in words
+```
+
+From them `pvmdbg` builds the call stack and shows variables by name (`bt`,
+`locals`, `print`, `globals`).
 
 ### The memory map in the listing
 
