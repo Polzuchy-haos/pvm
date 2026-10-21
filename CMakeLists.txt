@@ -188,7 +188,7 @@ add_test(NAME run_test_frame_pointer COMMAND $<TARGET_FILE:pvmsim> ${PVM_TESTFP_
 set_tests_properties(run_test_frame_pointer PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
 add_test(NAME run_test_svc COMMAND $<TARGET_FILE:pvmsim> ${PVM_TESTSVC_BYTECODE})
-set_tests_properties(run_test_svc PROPERTIES PASS_REGULAR_EXPRESSION "SVC print -> 42")
+set_tests_properties(run_test_svc PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 7")
 
 add_test(NAME run_hlc_square COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SQUARE_BYTECODE})
 set_tests_properties(run_hlc_square PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
@@ -203,7 +203,7 @@ add_test(NAME run_hlc_import_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_IMPORT
 set_tests_properties(run_hlc_import_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
 
 add_test(NAME run_hlc_svc_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SVCDEMO_BYTECODE})
-set_tests_properties(run_hlc_svc_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 42")
+set_tests_properties(run_hlc_svc_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x0 -> 7")
 
 add_test(NAME run_hlc_extern_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_EXTERNDEMO_BYTECODE})
 set_tests_properties(run_hlc_extern_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: halted")
@@ -212,13 +212,13 @@ add_test(NAME run_hlc_time_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_TIMEDEMO
 set_tests_properties(run_hlc_time_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x1 -> 10")
 
 add_test(NAME run_hlc_const_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_CONSTDEMO_BYTECODE})
-set_tests_properties(run_hlc_const_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 24")
+set_tests_properties(run_hlc_const_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 24")
 
 add_test(NAME run_hlc_sugar_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SUGARDEMO_BYTECODE})
-set_tests_properties(run_hlc_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 56")
+set_tests_properties(run_hlc_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 56")
 
 add_test(NAME run_hlc_more_sugar_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_MORESUGARDEMO_BYTECODE})
-set_tests_properties(run_hlc_more_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "pvmsim: SVC print -> 155")
+set_tests_properties(run_hlc_more_sugar_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 155")
 
 add_test(NAME run_hlc_sections_demo COMMAND $<TARGET_FILE:pvmsim> ${PVM_HLC_SECTIONSDEMO_BYTECODE})
 set_tests_properties(run_hlc_sections_demo PROPERTIES PASS_REGULAR_EXPRESSION "STORE 0x4007 -> 20")

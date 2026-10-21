@@ -4,6 +4,7 @@
 
 int scores[4] = {10, 20, 'A', -5};   // 'A' == 65; список-инициализатор массива
 int a, b = 3, c;                     // множественное объявление глобальных в одной строке
+volatile int OUT @ 0x4007;           // выходной регистр: что сюда записано, видно в трассе pvmsim
 
 int ClassifyScore(int s) {
     int i, sum, biggest;             // множественное объявление локальных
@@ -21,5 +22,5 @@ int ClassifyScore(int s) {
 void main() {
     a = 1;
     c = a + b;                                     // 1 + 3 = 4
-    svc(1, ClassifyScore(c) + ClassifyScore(-c));   // 90 (сумма) + 65 (максимум) = 155
+    OUT = ClassifyScore(c) + ClassifyScore(-c);     // 90 (сумма) + 65 (максимум) = 155
 }

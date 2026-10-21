@@ -1,9 +1,6 @@
 #include "pvmenv.h"
 
-#include <stdio.h>
-
-static PVM_Word_t  g_periph[8] = {0};
-static const char* g_toolName  = "pvm";
+static PVM_Word_t g_periph[PVMENV_PERIPH_WORDS] = {0};
 
 /*
  * SVC #0: "system tick" -- returns a free-running counter, no arguments.
@@ -22,18 +19,6 @@ static int Svc_Tick(PVM_State_s* s){
 	return PVM_Push(s, now);
 }
 
-/* SVC #1: pop one value and print it -- a minimal demo of calling into C
- * (a real firmware might expose things like UART output or flash access this way). */
-static int Svc_Print(PVM_State_s* s){
-	PVM_Word_t value;
-	int status = PVM_Pop(s, &value);
-
-	if(status == ERRORCODE_NO_ERROR)
-		printf("%s: SVC print -> %d\n", g_toolName, value);
-
-	return status;
-}
-
 /* SVC #2: pop two values, push their sum -- demonstrates reading multiple
  * arguments and pushing a real (non-status) result back for the caller. */
 static int Svc_Add(PVM_State_s* s){
@@ -46,15 +31,15 @@ static int Svc_Add(PVM_State_s* s){
 	return status;
 }
 
+/* #1 is left empty rather than closed up, so that programs calling #2 keep
+ * working; the VM answers a call to an empty slot with ERRORCODE_BAD_SVC. */
 static const PVM_SvcFunc kSvcTable[] = {
 	Svc_Tick,
-	Svc_Print,
+	0,
 	Svc_Add,
 };
 
-void PVMENV_Attach(PVM_State_s* state, const char* toolName){
-	g_toolName = toolName;
-
-	PVM_UsrSect(state, g_periph, sizeof(g_periph) / sizeof(PVM_Word_t));
+void PVMENV_Attach(PVM_State_s* state){
+	PVM_UsrSect(state, g_periph, PVMENV_PERIPH_WORDS);
 	PVM_RegisterSvc(state, kSvcTable, sizeof(kSvcTable) / sizeof(kSvcTable[0]));
 }

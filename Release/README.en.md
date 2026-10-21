@@ -190,7 +190,13 @@ only matters when running from inside the `build/` tree).
 
 ```
 pvmsim program.bin
+pvmsim program.bin --stack 256 --ram 128   # other pool sizes, in words
 ```
+
+The stack and RAM sizes are set at launch (`--stack`, `--ram`; 1024 and 64
+words by default, `PVM_CFG_*` in `pvm/pvm.h`) — the way a firmware sizes the
+pools for its own board, so a program can be run against exactly the sizes the
+device will have. `--steps N` changes the 100000-instruction limit.
 
 A program that reaches `HALT` exits with code 0 and the words
 `pvmsim: halted`; a program with an execution error (a bad address, say) exits

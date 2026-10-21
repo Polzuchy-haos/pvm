@@ -5,6 +5,7 @@
 // - sizeof(array)            (сворачивается в PUSH <размер> на этапе компиляции)
 
 int history[8];
+volatile int OUT @ 0x4007;      // выходной регистр: что сюда записано, видно в трассе pvmsim
 
 int SumWithSugar() {
     int i;
@@ -30,5 +31,5 @@ int SumWithSugar() {
 }
 
 void main() {
-    svc(1, SumWithSugar()); // ожидаем "SVC print -> 56"
+    OUT = SumWithSugar();   // ожидаем "STORE 0x4007 -> 56"
 }

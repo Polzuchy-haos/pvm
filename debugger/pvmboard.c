@@ -166,7 +166,7 @@ int main(int argc, char** argv){
 
 	memset(&vm, 0, sizeof(vm));
 	PVM_Init(&vm, code, len, g_stack, PVM_CFG_STACK_SIZE, g_ram, PVM_CFG_RAM_SIZE);
-	PVMENV_Attach(&vm, "pvmboard");
+	PVMENV_Attach(&vm);
 	PVMDBG_Init(&dbg, &vm);
 
 	if(paused){
@@ -183,7 +183,7 @@ int main(int argc, char** argv){
 		return EXIT_FAILURE;
 	}
 
-	/* stderr: stdout is the program's, through SVC #1. */
+	/* stderr, like everything else this tool says. */
 	fprintf(stderr, "pvmboard: '%s' (%d bytes), debugger on %s:%s%s\n",
 					path, len, host, port, paused ? ", paused" : "");
 	started = time(0);

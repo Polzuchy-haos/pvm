@@ -142,7 +142,7 @@ Transport_s* TransportLocalOpen(const char* bytecodePath){
 		LocalClose(&local->base);
 		return 0;
 	}
-	PVMENV_Attach(&local->vm, "pvmdbg");
+	PVMENV_Attach(&local->vm);
 	PVMDBG_Init(&local->dbg, &local->vm);
 
 	return &local->base;

@@ -7,6 +7,8 @@ const int STEP     = MAX / 5;   // константа может ссылать�
 const int NEG_STEP = -STEP;     // унарный минус в константном выражении -> -2
 const int LED_ADDR = 0x4000;
 
+volatile int OUT @ 0x4007;     // выходной регистр: что сюда записано, видно в трассе pvmsim
+
 volatile int LED @ LED_ADDR;    // адрес MMIO -- тоже константное выражение
 int buffer[MAX];                // размер массива -- тоже константное выражение
 int Base = STEP * 3;            // инициализатор глобальной -- тоже константное выражение (6)
@@ -27,5 +29,5 @@ int SumSteps() {
 void main() {
     LED = MAX;
     buffer[0] = LED_ADDR;
-    svc(1, SumSteps());      // ожидаем "SVC print -> 24"
+    OUT = SumSteps();        // ожидаем "STORE 0x4007 -> 24"
 }

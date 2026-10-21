@@ -14,7 +14,8 @@ is configured differently, the sizes are declared in the source itself with the
 `.code`/`.ram`/`.stack`/`.usrsect` directives (below). The stack and RAM pools
 themselves are allocated by the firmware and handed to `PVM_Init`, so the
 actual sizes on a board are the firmware's to choose; the debugger's `mem`
-command shows them (see `docs/debugger.en.md`).
+command shows them (see `docs/debugger.en.md`). In the simulator they are
+set at launch: `pvmsim program.bin --stack 256 --ram 128`.
 
 ## File syntax
 
@@ -262,18 +263,19 @@ function. An unknown or unregistered number is the runtime error
 `ERRORCODE_BAD_SVC`.
 
 ```
-PUSH 42   ; argument for the handler
-PUSH 1    ; call number: SVC #1 (Svc_Print in simulator/pvmenv.c)
-SVC       ; the handler pops 42 with PVM_Pop
+PUSH 3    ; first argument
+PUSH 4    ; second argument
+PUSH 2    ; call number: SVC #2 (Svc_Add in simulator/pvmenv.c)
+SVC       ; the handler pops 4 and 3 with PVM_Pop and pushes 7 with PVM_Push
 ```
 
 `simulator/pvmenv.c` currently registers `SVC #0` — `Svc_Tick` (a system time
-tick, see `lib/time.hlc`), `SVC #1` — `Svc_Print` (print a number), and
-`SVC #2` — `Svc_Add` (the sum of two numbers). That is one particular table,
+tick, see `lib/time.hlc`) and `SVC #2` — `Svc_Add` (the sum of two numbers);
+`SVC #1` is free. That is one particular table,
 shared by the simulator and the debugger, not part of the language: on a real
 MCU the numbers and handlers will be your own.
 
-See `example/test_svc.pvms` and the `Svc_Print` handler in
+See `example/test_svc.pvms` and the `Svc_Add` handler in
 `simulator/pvmenv.c`.
 
 ### Halting
